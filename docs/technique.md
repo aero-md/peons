@@ -134,6 +134,7 @@ tools/readme-gifs     rend les GIF du README (`docs/img`) avec les vrais assets 
 tools/rock-fx         tire de rock.png les frames du cycle (réécrit `assets/fx/rock_*.png` et l'entrée `mining_rock` du manifest ; `-assets` pour la racine des assets, `-seed` pour d'autres fissures ; à relancer après retouche)
 tools/mining-gif      rend en GIF le clawd qui creuse, roche figée (`go run ./tools/mining-gif art/mining.gif`)
 tools/portaltex       recrée la texture du portail d'apparition (d'après la palette d'une image de référence, non versionnée)
+tools/exe-icon        écrit cmd/peons/rsrc_windows_amd64.syso, l'icône de peons.exe (le clawd), liée par go build ; à relancer et à commiter quand le sprite change
 tools/soak            test de charge contre les fuites mémoire
 ```
 
