@@ -12,6 +12,18 @@ Plus besoin de faire le tour des terminaux. Un coup d'œil sur l'île et tu sais
 
 De gauche à droite : il creuse, il attend ta réponse, il compacte, il est content, il dort. Pas de fenêtre à ouvrir, pas de terminal à fouiller : l'île reste au-dessus des autres fenêtres, transparente, et tu peux la glisser où tu veux.
 
+## Installation
+
+Windows uniquement. Une commande :
+
+```
+claude plugin install peons --marketplace aero-md/peons
+```
+
+Au démarrage de la prochaine session, le plugin branche les hooks et télécharge `peons.exe` depuis les releases GitHub (SHA-256 vérifié). Le tout premier démarrage peut afficher « erreur normale au premier lancement » : l'exe est encore en cours de téléchargement, sans conséquence. Les sessions déjà ouvertes ne sont prises en compte qu'à leur redémarrage.
+
+Mises à jour : `/peons:update` pour l'exe, `claude plugin update peons@peons` pour le plugin. Si d'anciens hooks de peons traînent dans `~/.claude/settings.json`, l'application le signale : retire-les, sinon chaque événement arrive en double. Mise à jour automatique du plugin, commandes, fonctionnement du hook, architecture : tout est dans [`docs/technique.md`](docs/technique.md).
+
 ## Ce que chaque état veut dire
 
 ### Claude s'active
@@ -72,6 +84,10 @@ Passe la souris sur un bonhomme : une petite étiquette (Windows) apparaît avec
 - son état et depuis combien de temps, et l'outil en cours (`Bash`, `Edit`...) ;
 - une **barre de contexte** : elle se remplit, et vire du vert au rouge à l'approche de la limite, avec le nombre de tokens restants. C'est une estimation, mais bien assez bonne pour savoir qui va bientôt avoir besoin d'un `/compact`.
 
+## Un clic
+
+Un clic sur un bonhomme met au premier plan le terminal de sa session et le fait clignoter. Dans Windows Terminal, l'onglet est retrouvé par son titre (UI Automation) : c'est une solution bancale, un onglet n'étant relié ni à un PID ni à `WT_SESSION`. Sans correspondance (titre dupliqué, tronqué ou changé à la main), seule la fenêtre passe au premier plan.
+
 ## Les réglages
 
 Un double-clic sur l'île (ou « Réglages » dans le menu de l'icône de la zone de notification) ouvre une vraie fenêtre de réglages :
@@ -81,41 +97,7 @@ Un double-clic sur l'île (ou « Réglages » dans le menu de l'icône de la zon
 - « toujours afficher », même quand aucune session n'est ouverte (sinon l'île se cache) ;
 - la liste des sessions et le détail de celle que tu as choisie.
 
-## Installation
-
-Windows uniquement : l'interface parle directement à Win32, sans bibliothèque tierce. Linux et macOS ne sont plus pris en charge (ils s'appuyaient sur SDL3, retiré).
-
-### En plugin Claude Code
-
-Sans compiler, sans PowerShell : le plugin branche les hooks et installe `peons.exe` depuis les releases GitHub.
-
-```
-claude plugin install peons --marketplace aero-md/peons
-```
-
-Ça ajoute la marketplace directement depuis ce dépôt GitHub puis installe le plugin (Claude Code 2.1.292 ou plus ; avant, `claude plugin marketplace add aero-md/peons` puis `claude plugin install peons@peons`). Pour suivre un tag plutôt que la branche par défaut : `aero-md/peons#v1.2.0`.
-
-**L'exécutable.** Au démarrage d'une session, `bin/fetch.cmd` (lancé par `cmd.exe`) regarde si `%LOCALAPPDATA%\peons\peons.exe` existe. Si oui, il ne fait rien : aucune requête réseau. Sinon il télécharge la dernière release avec `curl.exe` et vérifie son SHA-256 (`certutil`) contre `peons.exe.sha256`, publié à côté de l'exe. Le hook du tout premier `SessionStart` peut partir avant la fin du téléchargement : `bin/hook.cmd` affiche alors « erreur normale au premier lancement, peons.exe est encore en cours de téléchargement » : sans conséquence, les événements suivants passent.
-
-**Mises à jour.** Il y en a deux, indépendantes :
-
-- *Le plugin* (hooks, skills) se met à jour depuis ce dépôt, mais **la mise à jour automatique est désactivée par défaut** pour une marketplace tierce. Activez-la dans `/plugin` → onglet **Marketplaces** → `peons` → **Enable auto-update**, ou dans `~/.claude/settings.json` :
-
-  ```json
-  "extraKnownMarketplaces": {
-    "peons": {
-      "source": { "source": "github", "repo": "aero-md/peons" },
-      "autoUpdate": true
-    }
-  }
-  ```
-
-  Claude Code rafraîchit alors la marketplace peu après le premier message de la session, et la nouvelle version est chargée au lancement suivant (ou tout de suite avec `/reload-plugins`). Le manifeste ne fixe volontairement pas de `version` : chaque commit du dépôt est une nouvelle version. Mise à jour à la main : `claude plugin update peons@peons`.
-- *`peons.exe`* ne se met à jour que sur demande : **`/peons:update`** retélécharge la dernière release. L'ancien exe est renommé en `peons.old.exe` (Windows refuse d'écraser un exe qui tourne) ; relancez ensuite l'application.
-
-Si `settings.json` contient encore les hooks d'une ancienne installation (entrées dont la commande finit par `peons.exe hook`), l'application le signale au démarrage : retirez-les, sinon chaque événement serait reçu deux fois.
-
-### Depuis les sources
+## Depuis les sources
 
 ```powershell
 .\build.ps1 -Out "$env:LOCALAPPDATA\peons\peons.exe"
@@ -123,11 +105,7 @@ claude plugin marketplace add .
 claude plugin install peons@peons
 ```
 
-Ça lance les tests, produit `peons.exe` (un seul fichier, sans DLL) à l'endroit où les hooks du plugin l'attendent, puis installe le plugin depuis votre copie du dépôt. À partir de là, les sessions Claude Code font apparaître leurs bonhommes toutes seules, et l'application se lance d'elle-même au besoin.
-
-Un clic sur un bonhomme met au premier plan le terminal de sa session et le fait clignoter. Dans Windows Terminal, l'onglet est retrouvé par son titre (UI Automation) : c'est une solution bancale, un onglet n'étant relié ni à un PID ni à `WT_SESSION`. Sans correspondance (titre dupliqué, tronqué ou changé à la main), seule la fenêtre passe au premier plan.
-
-Tout le reste (commandes, fonctionnement du hook, architecture, détails d'implémentation) est dans [`docs/technique.md`](docs/technique.md).
+Ça lance les tests, produit `peons.exe` (un seul fichier, sans DLL) à l'endroit où les hooks du plugin l'attendent, puis installe le plugin depuis ta copie du dépôt.
 
 ## D'où ça vient
 
