@@ -1,0 +1,213 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "${CLAUDE_PLUGIN_ROOT}/bin/fetch.cmd"
+            ],
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": "manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/c",
+              "%LOCALAPPDATA%\\peons\\peons.exe",
+              "hook"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

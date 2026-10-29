@@ -14,6 +14,7 @@ const (
 	attachParentProcess = ^uintptr(0) // (DWORD)-1
 	genericWrite        = 0x40000000
 	mbOK, mbIconError   = 0x0, 0x10
+	mbIconWarning       = 0x30
 )
 
 var (
@@ -42,7 +43,7 @@ func startDetached() error {
 func freeConsole() {}
 
 // useConsole rattache les sorties au terminal qui a lancé l'exécutable (il n'en
-// a pas par défaut, étant graphique), pour « install », « uninstall » et « -trace ».
+// a pas par défaut, étant graphique), pour « -trace ».
 // Sans effet si la sortie est déjà redirigée ou s'il n'y a pas de terminal.
 func useConsole() {
 	if h, err := syscall.GetStdHandle(syscall.STD_OUTPUT_HANDLE); err == nil && h != 0 && h != syscall.InvalidHandle {
@@ -62,8 +63,13 @@ func useConsole() {
 
 // showError montre une erreur de démarrage : sans console, l'utilisateur qui a
 // double-cliqué sur l'exécutable ne verrait sinon rien.
-func showError(text string) {
+func showError(text string) { messageBox(text, mbIconError) }
+
+// showNotice avertit l'utilisateur sans bloquer l'application.
+func showNotice(text string) { go messageBox(text, mbIconWarning) }
+
+func messageBox(text string, icon uintptr) {
 	t, _ := syscall.UTF16PtrFromString(text)
 	c, _ := syscall.UTF16PtrFromString("peons")
-	messageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), mbOK|mbIconError)
+	messageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), mbOK|icon)
 }

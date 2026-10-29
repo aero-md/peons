@@ -6,7 +6,6 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -111,48 +110,24 @@ type settings struct {
 	hasMouse bool
 	tracking bool // Windows a été prié de signaler la sortie de la souris
 
-	hookOK    bool
-	hookStale bool // branché, mais sur un autre exécutable que celui-ci
-	hookErr   string
+	legacyHook string // ancien hook de peons trouvé dans settings.json, ou ""
 }
 
 func (s *settings) p(v int) int { return int(math.Round(float64(v) * s.scale)) }
 
-// refreshHook relit l'état du hook : branché ou non, et sur cet exécutable ou un
-// autre (l'exécutable a été déplacé : le hook pointe dans le vide).
-func (s *settings) refreshHook() {
-	s.hookOK, s.hookStale = false, false
+const legacyHookNotice = "Des hooks de peons sont encore dans le settings.json de Claude Code : le plugin les remplace, chaque événement serait reçu deux fois. Retire-les de ~/.claude/settings.json (entrées dont la commande finit par « peons.exe hook »)."
+
+// legacyHook donne la commande d'un ancien hook de peons dans settings.json, ou "".
+func legacyHook() string {
 	dir, err := claudecfg.Dir()
 	if err != nil {
-		return
+		return ""
 	}
-	cmd := claudecfg.InstalledCommand(dir)
-	s.hookOK = cmd != ""
-	if exe, err := os.Executable(); err == nil && s.hookOK {
-		s.hookStale = cmd != claudecfg.Command(exe)
-	}
+	return claudecfg.LegacyCommand(dir)
 }
 
-// toggleHook branche le hook sur cet exécutable (ou le rebranche s'il pointait
-// ailleurs), ou le débranche s'il est en place.
-func (s *settings) toggleHook() {
-	s.hookErr = ""
-	dir, err := claudecfg.Dir()
-	if err == nil {
-		if s.hookOK && !s.hookStale {
-			_, err = claudecfg.Uninstall(dir)
-		} else {
-			var exe string
-			if exe, err = os.Executable(); err == nil {
-				_, err = claudecfg.Install(dir, claudecfg.Command(exe))
-			}
-		}
-	}
-	if err != nil {
-		s.hookErr = err.Error()
-	}
-	s.refreshHook()
-}
+// refreshHook relit les réglages de Claude Code à la recherche d'anciens hooks.
+func (s *settings) refreshHook() { s.legacyHook = legacyHook() }
 
 // pointerMoved note la position de la souris dans la fenêtre (survol des boutons).
 func (s *settings) pointerMoved(x, y int) {
@@ -382,40 +357,15 @@ func (s *settings) build(now time.Time) (height int) {
 
 	// --- Claude Code
 	y = s.section(y, "Claude Code")
-	status, col, action := "non branché", colAmber, "Brancher"
-	switch {
-	case s.hookStale:
-		status, action = "branché ailleurs", "Rebrancher"
-	case s.hookOK:
-		status, col, action = "branché", colGreen, "Débrancher"
-	}
-	bh := s.p(28)
-	s.text(x0, y+(bh-s.lineH(styleBody))/2, "Hook :", styleBody, colText)
-	s.text(x0+s.measure("Hook : ", styleBody), y+(bh-s.lineH(styleBody))/2, status, styleBold, col)
-	bw := s.p(110)
-	s.button(image.Rect(xr-bw, y, xr, y+bh), action, !s.hookOK || s.hookStale, s.toggleHook)
-	y += bh + s.p(8)
-	hint := ""
-	switch {
-	case s.hookStale:
-		hint = "Le hook pointe vers un autre exécutable (déplacé ?). Rebrancher le fait pointer vers celui-ci."
-	case !s.hookOK:
-		hint = "Un clic suffit : les clawd suivront ensuite tes sessions Claude Code."
+	hint, col := "Les hooks viennent du plugin : claude plugin install peons --marketplace aero-md/peons", colMuted
+	if s.legacyHook != "" {
+		hint, col = legacyHookNotice, colAmber
 	}
 	for _, line := range wrap(hint, 66) {
-		s.text(x0, y-s.p(2), line, styleSmall, colMuted)
+		s.text(x0, y-s.p(2), line, styleSmall, col)
 		y += s.lineH(styleSmall)
 	}
-	if hint != "" {
-		y += s.p(4)
-	}
-	if s.hookErr != "" {
-		for _, line := range wrap(s.hookErr, 62) {
-			s.text(x0, y, line, styleSmall, colRed)
-			y += s.lineH(styleSmall)
-		}
-		y += s.p(6)
-	}
+	y += s.p(4)
 
 	// --- Réglages
 	y = s.section(y+s.p(6), "Réglages")
