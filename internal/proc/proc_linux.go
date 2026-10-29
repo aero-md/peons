@@ -75,3 +75,6 @@ func stat(pid uint32) (comm string, ppid uint32, start int64, ok bool) {
 	}
 	return s[l+1 : r], uint32(p), st, true
 }
+
+// Focus : pas de prise en charge hors Windows.
+func Focus(pid uint32, title string) bool { return false }

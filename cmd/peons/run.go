@@ -236,6 +236,9 @@ func runApp() {
 		}
 		return
 	}
+	if legacyHook() != "" {
+		showNotice(legacyHookNotice)
+	}
 	if !opt.trace {
 		freeConsole()
 	}
@@ -880,7 +883,7 @@ func (a *app) selectAt(x, y float32) {
 }
 
 // click : clic simple sur la fenêtre. Un clic gauche choisit le bonhomme (les
-// réglages montrent son détail). En démo, il le fait travailler puis terminer ;
+// réglages montrent son détail) et met le terminal de sa session au premier plan. En démo, il le fait travailler puis terminer ;
 // le clic droit le fait attendre une réponse.
 func (a *app) click(x, y float32, right bool) {
 	v, ok := a.viewAt(x, y)
@@ -890,6 +893,9 @@ func (a *app) click(x, y float32, right bool) {
 	id := v.sess.ID
 	if !right {
 		a.selected = id
+		if pid := v.sess.PID; pid != 0 { // met son terminal au premier plan, pour la retrouver
+			go proc.Focus(pid, v.sess.Title())
+		}
 	}
 	if !opt.demo {
 		return

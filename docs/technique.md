@@ -2,7 +2,7 @@
 
 Un clawd par session Claude Code, dans une fenêtre transparente posée sur une île. Pour la présentation : [`README.md`](../README.md). Licences, origine des images et de la police : `LICENSE` et `UPSTREAM.md`.
 
-## Construire et brancher
+## Construire et installer
 
 ```powershell
 .\build.ps1                    # tests, puis peons.exe
@@ -12,16 +12,15 @@ Un clawd par session Claude Code, dans une fenêtre transparente posée sur une 
 
 - **Un seul fichier** à déployer : `peons.exe`, sans DLL à côté. Il ne dépend que des DLL de Windows, chargées depuis System32 seulement (`windows.NewLazySystemDLL` : une DLL du même nom posée à côté de l'exe ou dans le dossier courant n'est jamais prise). Il écrase la sortie : `build.ps1` échoue si l'exe tourne, d'où `-Out` vers un autre dossier pour tester.
 - `-SignWith` : horodatage best-effort (sans, si le serveur est injoignable). Tant que l'éditeur du certificat n'est pas approuvé sur la machine, le statut reste `UnknownError`.
-- Windows : l'exécutable est graphique (`-H=windowsgui`), un double-clic n'ouvre aucune console. Une erreur de démarrage s'affiche dans une boîte de message et dans `peons.log`. `install`, `uninstall` et `-trace` rattachent la console parente.
-- **Double-clic** : lance l'application et ouvre les réglages ; **Brancher** écrit les hooks dans `~/.claude/settings.json`. Ensuite, chaque événement est transmis par le hook, qui démarre lui-même l'application (sans réglages) si elle ne tourne pas. Un second lancement envoie l'événement de contrôle `peons.settings` par la socket et rouvre les réglages de l'instance en cours. Pas de lancement au démarrage de Windows : le hook s'en charge.
-- L'exécutable garde son emplacement : le hook en enregistre le chemin. Déplacé, les réglages affichent « branché ailleurs » et **Rebrancher** corrige (`claudecfg.InstalledCommand`). Renommé, son nom doit finir par `peons` (`clawd-peons.exe`) : c'est ainsi que son hook est reconnu.
+- Windows : l'exécutable est graphique (`-H=windowsgui`), un double-clic n'ouvre aucune console. Une erreur de démarrage s'affiche dans une boîte de message et dans `peons.log`. `-trace` rattache la console parente.
+- **Double-clic** : lance l'application et ouvre les réglages. Les hooks viennent du plugin (`plugin/hooks/hooks.json`, voir le README) ; chaque événement est transmis par le hook, qui démarre lui-même l'application (sans réglages) si elle ne tourne pas. Un second lancement envoie l'événement de contrôle `peons.settings` par la socket et rouvre les réglages de l'instance en cours. Pas de lancement au démarrage de Windows : le hook s'en charge.
+- **Emplacement** : les hooks du plugin appellent `%LOCALAPPDATA%\peons\peons.exe` par `cmd.exe /c` (la forme sans shell de Claude Code n'expanse pas `%VAR%`). `plugin/bin/fetch.cmd` y installe la dernière release, SHA-256 vérifié ; `/peons:update` le refait en mode forcé. Si `settings.json` contient d'anciens hooks (`claudecfg.LegacyCommand`), l'application le signale au démarrage et dans les réglages ; elle n'écrit plus jamais dans ce fichier.
 
 ## Commandes
 
 | Commande | Rôle |
 |---|---|
 | `peons` / `peons run` | lance l'application et ouvre les réglages |
-| `peons install` / `uninstall` | comme le bouton, sans toucher au reste de `settings.json` ; sauvegarde `settings.json.bak-peons`, clés dans l'ordre d'origine, écriture par fichier temporaire + renommage, fichier illisible jamais réécrit. `-config <dossier>` ou `$CLAUDE_CONFIG_DIR` pour viser un autre dossier |
 | `peons hook` | appelé par Claude Code, jamais à la main : JSON de l'événement sur stdin (8 Mo au plus), rien sur stdout, code de sortie toujours 0 |
 
 Options de `run` (les durées de cycle et `-ui` priment sur les réglages, pour ce lancement seulement) :
@@ -58,7 +57,7 @@ Fichiers de l'utilisateur : `prefs.json` dans le dossier de configuration (`%App
 
 Une vraie fenêtre Windows (`settings_windows.go`), créée à l'ouverture et détruite à la fermeture (rien en mémoire fermée), rafraîchie chaque seconde. Tout est dessiné par Go (`gofont`) dans une section DIB que `BitBlt` recopie à l'écran : ni GPU ni cache de textures. Échap ou la croix la ferme ; la molette la fait défiler. Elle montre :
 
-- **Claude Code** : état du hook (branché, non branché, branché ailleurs) et bouton Brancher / Débrancher / Rebrancher ;
+- **Claude Code** : avertissement si d'anciens hooks de peons traînent dans `settings.json` ;
 - **Toujours afficher**, même sans session (sinon l'overlay se cache) ;
 - **Taille des clawd** (− / +, 1× à 8×) : l'île et la fenêtre suivent ;
 - **Taille de l'étiquette** (− / +, 1× à 4×) : l'étiquette de survol, indépendante de la taille des clawd ;
@@ -95,7 +94,7 @@ réponse finie ─ content ─ (2 min) ─ neutre ─┴─ (5 min) ─ triste �
 - **Sous-agents** : chaque sous-agent vivant (outil Agent/Task) est une petite particule qui flotte de ±1 px à son propre rythme au-dessus de la tête de son clawd parent, en ligne centrée (resserrée pour tenir dans la fenêtre) ; elle ne change pas le corps du parent. Trois états : *working* (utilise un outil, ou actif depuis moins de 10 s), *idle* (muet depuis plus de 10 s), *throttle* (la session principale a fini son tour et l'attend). Les événements d'un sous-agent portent le `session_id` du parent plus `agent_id` / `agent_type`. Un sous-agent muet depuis 2 min est oublié (filet si son `SubagentStop` n'arrive jamais). Sprites : `assets/fx/agent_{idle,working,throttle}.png`.
 - **Apparition** : un portail ovale s'ouvre et le clawd en tombe, droit et neutre (900 ms au total : ouverture jusqu'à 280 ms, chute de 200 à 650 ms, fermeture à partir de 680 ms).
 - **Disparition** : une session s'en va à `SessionEnd`, quand son processus Claude Code meurt (vérifié toutes les 3 s ; le PID est repéré au `SessionStart` et au `UserPromptSubmit` pour détecter un terminal fermé, qui n'envoie aucun `SessionEnd`), ou après 2 h sans événement. Son clawd se désagrège alors à sa place, figé dans sa dernière pose (`internal/snap`, 2,5 s) : 45 % des pixels s'effacent sur place, au hasard, dans la première seconde ; les autres se détachent, le côté droit d'abord, s'envolent avec le vent vers la droite et le haut, virent à la poussière et s'effacent en vol. Les autres bonhommes se resserrent ensuite.
-- **Événements écoutés** (`claudecfg`) : `UserPromptSubmit`, `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `StopFailure`, `PermissionRequest` (matcher `*` pour `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied` et `PermissionRequest`), `PreCompact` (matchers `auto` et `manual`), `Stop`, `SubagentStop`, `SessionEnd`.
+- **Événements écoutés** (`plugin/hooks/hooks.json`) : `UserPromptSubmit`, `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `StopFailure`, `PermissionRequest` (matcher `*` pour `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied` et `PermissionRequest`), `PreCompact` (matchers `auto` et `manual`), `Stop`, `SubagentStop`, `SessionEnd`.
 
 ## Disposition
 
@@ -116,12 +115,12 @@ réponse finie ─ content ─ (2 min) ─ neutre ─┴─ (5 min) ─ triste �
 ## Architecture
 
 ```
-cmd/peons             commandes run / hook / install ; Win32 (win32_windows.go), boucle de messages, overlay, réglages, tray, étiquette
+cmd/peons             commandes run / hook ; Win32 (win32_windows.go), boucle de messages, overlay, réglages, tray, étiquette
 internal/session      Store des sessions : événements des hooks → mood.Snapshot, sous-agents, contexte, titre
 internal/mood         Snapshot + temps → aspect (corps, émotion) ; fonction pure
 internal/avatar       manifest du personnage : corps, yeux, fx, squash ; horloge propre à chaque animation ; Spacing / Reach
 internal/ipc          socket Unix (Windows 10+, Linux, macOS) entre hook et application
-internal/claudecfg    lecture/écriture sûre de settings.json
+internal/claudecfg    détection d'anciens hooks dans settings.json (lecture seule)
 internal/proc         retrouve le processus Claude Code et vérifie qu'il vit (par OS)
 internal/transcript   contexte et titre, lus dans le journal JSONL d'une session
 internal/terrain      assemble l'île : extrémité gauche, sections centrales au hasard, extrémité droite
@@ -148,3 +147,7 @@ tools/soak            test de charge contre les fuites mémoire
 - **Mémoire bornée** : sessions et bonhommes plafonnés, historique de 6 événements, textures créées une fois (images immuables), tas rendu au système 20 s après la dernière rafale (`debug.FreeOSMemory`). Mesures sous Windows : environ 20 Mo privés au repos, 0 % de CPU sans session ; `tools/soak` envoie des dizaines de milliers d'événements pour le vérifier ; le tas Go plafonne à environ 5 Mo et goroutines et handles restent stables.
 - **Pièges connus** : dans `main`, ne pas écrire `cmd, os.Args = os.Args[1], append(os.Args[:1], …)` (ordre d'évaluation indéfini)  ; en démo ou en test, lancer l'application avec un dossier temporaire **court** (`APPDATA`, `LOCALAPPDATA`, `XDG_RUNTIME_DIR`) : le chemin de la socket Unix ne peut pas dépasser 108 caractères. Le canevas des réglages est la mémoire de la section DIB (BGRA) lue comme du RGBA : les couleurs y sont écrites rouge et bleu échangés (`bgr`).
 - **Tests** : `go test ./...` couvre l'humeur, les sessions, l'IPC, `claudecfg`, l'avatar, l'île et la disposition. Pour tester le hook à la main, lancer `peons hook` avec `Start-Process -PassThru` + `WaitForExit()` (pas `-Wait`, qui attend aussi l'application lancée par le hook).
+
+## Clic sur un bonhomme
+
+`proc.Focus(pid, titre)` retrouve la fenêtre du terminal par la console de Claude Code (`AttachConsole` + `GetConsoleWindow` + `GetAncestor(GA_ROOTOWNER)`), la met au premier plan et la fait clignoter. Dans Windows Terminal (un seul processus pour toutes les fenêtres), l'onglet est ensuite sélectionné par UI Automation (`uia_windows.go`, `CUIAutomation` appelé par les vtables COM) : on liste les `TabItem` de la fenêtre, on compare leur nom au titre de la session (`SameTitle`, qui ignore le symbole d'état en tête) et on appelle `SelectionItemPattern.Select()`. Windows Terminal ne relie un onglet ni à un PID ni à `WT_SESSION` : le titre est la seule jonction, elle peut être tronquée, dupliquée ou changée à la main. Sans correspondance, la fenêtre reste seule au premier plan.

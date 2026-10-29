@@ -76,7 +76,6 @@ Passe la souris sur un bonhomme : une petite étiquette (Windows) apparaît avec
 
 Un double-clic sur l'île (ou « Réglages » dans le menu de l'icône de la zone de notification) ouvre une vraie fenêtre de réglages :
 
-- brancher ou débrancher le hook dans Claude Code ;
 - la taille des clawd (de 1× à 8×), celle de l'étiquette de survol (de 1× à 4×, à part) et celle de l'île, qui grandit toute seule avec le nombre de bonhommes (8 affichés au plus), ou que tu peux fixer à la main, ou carrément cacher ;
 - la durée des humeurs : content, neutre, triste ;
 - « toujours afficher », même quand aucune session n'est ouverte (sinon l'île se cache) ;
@@ -86,11 +85,47 @@ Un double-clic sur l'île (ou « Réglages » dans le menu de l'icône de la zon
 
 Windows uniquement : l'interface parle directement à Win32, sans bibliothèque tierce. Linux et macOS ne sont plus pris en charge (ils s'appuyaient sur SDL3, retiré).
 
-```powershell
-.\build.ps1
+### En plugin Claude Code
+
+Sans compiler, sans PowerShell : le plugin branche les hooks et installe `peons.exe` depuis les releases GitHub.
+
+```
+claude plugin install peons --marketplace aero-md/peons
 ```
 
-Ça lance les tests, puis produit `peons.exe` (un seul fichier, sans DLL). **Double-clic** sur `peons.exe`, puis **Brancher** dans la fenêtre de réglages. C'est tout : à partir de là, les sessions Claude Code font apparaître leurs bonhommes toutes seules, et l'application se lance d'elle-même au besoin.
+Ça ajoute la marketplace directement depuis ce dépôt GitHub puis installe le plugin (Claude Code 2.1.292 ou plus ; avant, `claude plugin marketplace add aero-md/peons` puis `claude plugin install peons@peons`). Pour suivre un tag plutôt que la branche par défaut : `aero-md/peons#v1.2.0`.
+
+**L'exécutable.** Au démarrage d'une session, `bin/fetch.cmd` (lancé par `cmd.exe`) regarde si `%LOCALAPPDATA%\peons\peons.exe` existe. Si oui, il ne fait rien : aucune requête réseau. Sinon il télécharge la dernière release avec `curl.exe` et vérifie son SHA-256 (`certutil`) contre `peons.exe.sha256`, publié à côté de l'exe. Le hook du tout premier `SessionStart` peut partir avant la fin du téléchargement : il échoue sans conséquence, les événements suivants passent.
+
+**Mises à jour.** Il y en a deux, indépendantes :
+
+- *Le plugin* (hooks, skills) se met à jour depuis ce dépôt, mais **la mise à jour automatique est désactivée par défaut** pour une marketplace tierce. Activez-la dans `/plugin` → onglet **Marketplaces** → `peons` → **Enable auto-update**, ou dans `~/.claude/settings.json` :
+
+  ```json
+  "extraKnownMarketplaces": {
+    "peons": {
+      "source": { "source": "github", "repo": "aero-md/peons" },
+      "autoUpdate": true
+    }
+  }
+  ```
+
+  Claude Code rafraîchit alors la marketplace peu après le premier message de la session, et la nouvelle version est chargée au lancement suivant (ou tout de suite avec `/reload-plugins`). Le manifeste ne fixe volontairement pas de `version` : chaque commit du dépôt est une nouvelle version. Mise à jour à la main : `claude plugin update peons@peons`.
+- *`peons.exe`* ne se met à jour que sur demande : **`/peons:update`** retélécharge la dernière release. L'ancien exe est renommé en `peons.old.exe` (Windows refuse d'écraser un exe qui tourne) ; relancez ensuite l'application.
+
+Si `settings.json` contient encore les hooks d'une ancienne installation (entrées dont la commande finit par `peons.exe hook`), l'application le signale au démarrage : retirez-les, sinon chaque événement serait reçu deux fois.
+
+### Depuis les sources
+
+```powershell
+.\build.ps1 -Out "$env:LOCALAPPDATA\peons\peons.exe"
+claude plugin marketplace add .
+claude plugin install peons@peons
+```
+
+Ça lance les tests, produit `peons.exe` (un seul fichier, sans DLL) à l'endroit où les hooks du plugin l'attendent, puis installe le plugin depuis votre copie du dépôt. À partir de là, les sessions Claude Code font apparaître leurs bonhommes toutes seules, et l'application se lance d'elle-même au besoin.
+
+Un clic sur un bonhomme met au premier plan le terminal de sa session et le fait clignoter. Dans Windows Terminal, l'onglet est retrouvé par son titre (UI Automation) : c'est une solution bancale, un onglet n'étant relié ni à un PID ni à `WT_SESSION`. Sans correspondance (titre dupliqué, tronqué ou changé à la main), seule la fenêtre passe au premier plan.
 
 Tout le reste (commandes, fonctionnement du hook, architecture, détails d'implémentation) est dans [`docs/technique.md`](docs/technique.md).
 

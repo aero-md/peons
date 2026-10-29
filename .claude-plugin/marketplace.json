@@ -1,0 +1,12 @@
+{
+  "name": "peons",
+  "owner": { "name": "aero-md" },
+  "description": "Peons : un clawd par session Claude Code, sur une île, dans une fenêtre transparente.",
+  "plugins": [
+    {
+      "name": "peons",
+      "source": "./plugin",
+      "description": "Branche peons sur les hooks de Claude Code et télécharge peons.exe depuis les releases GitHub."
+    }
+  ]
+}

@@ -11,6 +11,9 @@ import (
 	"peons/internal/session"
 )
 
+// capturesProcess : les événements où le hook cherche le processus Claude Code.
+var capturesProcess = map[string]bool{"SessionStart": true, "UserPromptSubmit": true, "Stop": true, "PermissionRequest": true, "PreCompact": true}
+
 // Le temps laissé à une application qu'on vient de lancer pour ouvrir sa socket.
 const startWait = 3 * time.Second
 
@@ -36,8 +39,11 @@ func runHook() {
 	}
 	ev := session.Event{Session: in.Session, Name: in.Name, Cwd: in.Cwd, Tool: in.Tool, Transcript: in.Journal, Agent: in.AgentID, AgentType: in.AgentType, At: time.Now().UnixNano()}
 	// le processus Claude Code permet à l'app de voir un terminal fermé
-	// (aucun SessionEnd n'est envoyé dans ce cas) ; une fois par session suffit
-	if in.Name == "SessionStart" || in.Name == "UserPromptSubmit" {
+	// (aucun SessionEnd n'est envoyé dans ce cas), et de retrouver son terminal au clic.
+	// Trouver ce processus coûte une vingtaine de ms : on ne le fait qu'aux événements
+	// rares, pas à chaque outil. Stop, PermissionRequest et PreCompact rattrapent une
+	// session déjà en cours quand l'application démarre.
+	if capturesProcess[in.Name] {
 		if pid, started, ok := proc.FindClaude(); ok {
 			ev.PID, ev.Started = pid, started
 		}

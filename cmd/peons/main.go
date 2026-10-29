@@ -1,10 +1,8 @@
 // peons : un clawd par session Claude Code, dans une fenêtre transparente.
 //
-//	peons             lance l'application et ouvre les réglages (là, un bouton branche le hook)
+//	peons             lance l'application et ouvre les réglages
 //	peons run         idem ; options : voir « peons run -h »
-//	peons hook        hook Claude Code : lit l'événement sur stdin et le transmet à l'application
-//	peons install     branche le hook dans ~/.claude/settings.json (même chose que le bouton)
-//	peons uninstall   le retire
+//	peons hook        hook Claude Code (celui du plugin) : lit l'événement sur stdin et le transmet à l'application
 //
 // L'exécutable est construit pour le sous-système graphique (voir build.ps1) :
 // un double-clic n'ouvre pas de console. Il ne dépend que des DLL de Windows.
@@ -36,12 +34,8 @@ func main() {
 		runApp()
 	case "hook":
 		runHook()
-	case "install":
-		runInstall(true)
-	case "uninstall":
-		runInstall(false)
 	default:
-		fmt.Fprintf(os.Stderr, "commande inconnue %q (run, hook, install, uninstall)\n", cmd)
+		fmt.Fprintf(os.Stderr, "commande inconnue %q (run, hook)\n", cmd)
 		os.Exit(2)
 	}
 }

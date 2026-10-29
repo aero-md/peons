@@ -59,3 +59,6 @@ func ps(pid uint32) (ppid uint32, comm string, ok bool) {
 	}
 	return uint32(p), strings.Join(f[1:], " "), true
 }
+
+// Focus : pas de prise en charge hors Windows.
+func Focus(pid uint32, title string) bool { return false }
