@@ -17,8 +17,7 @@
             "command": "cmd.exe",
             "args": [
               "/c",
-              "%LOCALAPPDATA%\\peons\\peons.exe",
-              "hook"
+              "${CLAUDE_PLUGIN_ROOT}/bin/hook.cmd"
             ]
           }
         ]

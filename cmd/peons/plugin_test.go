@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -29,7 +30,7 @@ func TestPluginHooks(t *testing.T) {
 		calls := false
 		for _, e := range entries {
 			for _, h := range e.Hooks {
-				calls = calls || slices.Contains(h.Args, "hook")
+				calls = calls || slices.Contains(h.Args, "hook") || slices.ContainsFunc(h.Args, func(a string) bool { return strings.HasSuffix(a, "/bin/hook.cmd") }) // SessionStart passe par hook.cmd, qui lance « peons.exe hook »
 			}
 		}
 		if !calls {

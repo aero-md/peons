@@ -95,7 +95,7 @@ claude plugin install peons --marketplace aero-md/peons
 
 Ça ajoute la marketplace directement depuis ce dépôt GitHub puis installe le plugin (Claude Code 2.1.292 ou plus ; avant, `claude plugin marketplace add aero-md/peons` puis `claude plugin install peons@peons`). Pour suivre un tag plutôt que la branche par défaut : `aero-md/peons#v1.2.0`.
 
-**L'exécutable.** Au démarrage d'une session, `bin/fetch.cmd` (lancé par `cmd.exe`) regarde si `%LOCALAPPDATA%\peons\peons.exe` existe. Si oui, il ne fait rien : aucune requête réseau. Sinon il télécharge la dernière release avec `curl.exe` et vérifie son SHA-256 (`certutil`) contre `peons.exe.sha256`, publié à côté de l'exe. Le hook du tout premier `SessionStart` peut partir avant la fin du téléchargement : il échoue sans conséquence, les événements suivants passent.
+**L'exécutable.** Au démarrage d'une session, `bin/fetch.cmd` (lancé par `cmd.exe`) regarde si `%LOCALAPPDATA%\peons\peons.exe` existe. Si oui, il ne fait rien : aucune requête réseau. Sinon il télécharge la dernière release avec `curl.exe` et vérifie son SHA-256 (`certutil`) contre `peons.exe.sha256`, publié à côté de l'exe. Le hook du tout premier `SessionStart` peut partir avant la fin du téléchargement : `bin/hook.cmd` affiche alors « erreur normale au premier lancement, peons.exe est encore en cours de téléchargement » : sans conséquence, les événements suivants passent.
 
 **Mises à jour.** Il y en a deux, indépendantes :
 
