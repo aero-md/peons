@@ -1,0 +1,29 @@
+# Publie peons.exe et son SHA-256 dans la release à chaque tag vX.Y.Z : le plugin
+# les télécharge depuis .../releases/latest/download/.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+        env:
+          CGO_ENABLED: "0"
+      - run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o peons.exe ./cmd/peons
+        env:
+          CGO_ENABLED: "0"
+      - run: sha256sum peons.exe > peons.exe.sha256
+      - run: gh release create "$GITHUB_REF_NAME" peons.exe peons.exe.sha256 --generate-notes || gh release upload "$GITHUB_REF_NAME" peons.exe peons.exe.sha256 --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
