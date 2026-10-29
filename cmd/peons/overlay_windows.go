@@ -24,7 +24,9 @@ type layeredOverlay struct {
 	island   []byte     // l'île dans le même format
 	w, h     int
 	x, y     int
-	tracking bool // Windows a été prié de signaler la sortie de la souris
+	tracking bool    // Windows a été prié de signaler la sortie de la souris
+	hook     uintptr // veille du premier plan, voir keepOnTop
+	visible  bool
 }
 
 // dibSection est une image 32 bits (BGRA, alpha prémultiplié) que Windows lit pour
@@ -69,7 +71,8 @@ func (d *dibSection) free() {
 
 var (
 	// la procédure de fenêtre : un seul rappel Go pour toute la vie du processus
-	overlayProc = windows.NewCallback(overlayWndProc)
+	overlayProc    = windows.NewCallback(overlayWndProc)
+	foregroundProc = windows.NewCallback(onForegroundChange)
 	// il n'y a qu'un overlay : la procédure de fenêtre le retrouve ici
 	layered *layeredOverlay
 )
@@ -103,6 +106,10 @@ const (
 	swpNoZOrder   = 0x0004
 	swpNoActivate = 0x0010
 	hwndTopmost   = ^uintptr(0) // (HWND)-1
+
+	gwlExStyle            = ^uintptr(19) // GWL_EXSTYLE (-20)
+	eventSystemForeground = 0x0003
+	winEventSkipOwn       = 0x0002 // WINEVENT_SKIPOWNPROCESS (hors contexte : rappel sur notre fil)
 
 	ulwAlpha = 0x00000002
 	idcArrow = 32512
@@ -162,7 +169,31 @@ func newLayeredOverlay() (*layeredOverlay, error) {
 	}
 	o := &layeredOverlay{hwnd: hwnd}
 	layered = o
+	o.hook, _, _ = procSetWinEventHook.Call(eventSystemForeground, eventSystemForeground, 0, foregroundProc, 0, 0, winEventSkipOwn)
 	return o, nil
+}
+
+// onForegroundChange : une autre fenêtre vient de passer au premier plan.
+func onForegroundChange(hook, event, hwnd, idObject, idChild, thread, ms uintptr) uintptr {
+	if o := layered; o != nil {
+		o.keepOnTop()
+	}
+	return 0
+}
+
+// keepOnTop remet l'overlay en « toujours au-dessus » si Windows lui a retiré
+// l'attribut (le z-order n'est posé qu'au Show : rien d'autre ne le garde). Ne touche
+// à rien tant que l'attribut est là, pour ne pas se battre avec les autres fenêtres
+// topmost.
+func (o *layeredOverlay) keepOnTop() {
+	if o.hwnd == 0 || !o.visible {
+		return
+	}
+	if style, _, _ := procGetWindowLongPtr.Call(o.hwnd, gwlExStyle); style&wsExTopmost != 0 {
+		return
+	}
+	logf("overlay : attribut topmost perdu, rétabli")
+	procSetWindowPos.Call(o.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
 }
 
 // overlayWndProc : la souris est notée pour la boucle principale ; le reste est
@@ -218,11 +249,15 @@ func overlayWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 }
 
 func (o *layeredOverlay) Show() {
+	o.visible = true
 	procShowWindow.Call(o.hwnd, swShowNoActivate)
 	procSetWindowPos.Call(o.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
 }
 
-func (o *layeredOverlay) Hide() { procShowWindow.Call(o.hwnd, swHide) }
+func (o *layeredOverlay) Hide() {
+	o.visible = false
+	procShowWindow.Call(o.hwnd, swHide)
+}
 
 func (o *layeredOverlay) Position() (int, int) { return o.x, o.y }
 
@@ -250,6 +285,9 @@ func (o *layeredOverlay) Resize(w, h int, island *image.NRGBA) {
 }
 func (o *layeredOverlay) Destroy() {
 	layered = nil
+	if o.hook != 0 {
+		procUnhookWinEvent.Call(o.hook)
+	}
 	procDestroyWindow.Call(o.hwnd)
 	o.dib.free()
 }
