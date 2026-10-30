@@ -87,6 +87,67 @@ func TestLeavingClawdTurnsToDust(t *testing.T) {
 	}
 }
 
+// /resume et /clear ouvrent une nouvelle session dans le même processus Claude Code :
+// l'ancienne se désagrège, la nouvelle tombe d'un portail à la même place, et l'île
+// ne bouge pas (ni rétrécie, ni cachée, ni agrandie entre-temps). Le SessionEnd de
+// l'ancienne peut arriver avant ou après le SessionStart de la nouvelle.
+func TestResumeKeepsTheSlot(t *testing.T) {
+	for _, endFirst := range []bool{true, false} {
+		a := portalApp(t, prefs.Prefs{})
+		base := time.Now()
+		a.store.Apply(session.Event{Session: "a", Name: "UserPromptSubmit", PID: 42, Started: 7}, base) // le processus de « a » (après la première vérification des processus)
+		a.update(base)
+		w, n := a.W, a.n
+
+		end := func() { a.store.Apply(session.Event{Session: "a", Name: "SessionEnd"}, base) }
+		start := func(at time.Duration) {
+			a.store.Apply(session.Event{Session: "b", Name: "SessionStart", PID: 42, Started: 7}, base.Add(at))
+		}
+		steady := func(at time.Duration, want string) {
+			t.Helper()
+			a.update(base.Add(at))
+			if len(a.views) != 1 || a.n != n || a.W != w || a.views[0].sess.ID != want {
+				t.Fatalf("endFirst=%v à %v : %d bonhommes (%s), fenêtre pour %d (%d px, avant %d), attendu « %s » seul, fenêtre inchangée", endFirst, at, len(a.views), a.views[0].sess.ID, a.n, a.W, w, want)
+			}
+		}
+		if endFirst {
+			end()
+			steady(0, "a")
+			start(50 * time.Millisecond)
+		} else {
+			start(0)
+			steady(0, "a")
+			end()
+		}
+		steady(100*time.Millisecond, "a")
+		if v := a.views[0]; v.dying.IsZero() || v.heir == nil || v.heir.ID != "b" {
+			t.Fatalf("endFirst=%v : « a » doit se désagréger en attendant son héritier « b » : %+v", endFirst, v)
+		}
+		steady(snap.Duration-time.Millisecond, "a")
+		steady(snap.Duration, "b")
+		if v := a.views[0]; !v.dying.IsZero() || v.born.IsZero() {
+			t.Errorf("endFirst=%v : « b » doit tomber d'un portail à la place de « a »", endFirst)
+		}
+	}
+}
+
+// Si l'héritier n'est plus là quand l'ancien a fini de se désagréger, la place est
+// libérée comme pour n'importe quel départ.
+func TestResumeHeirGone(t *testing.T) {
+	a := portalApp(t, prefs.Prefs{})
+	base := time.Now()
+	a.store.Apply(session.Event{Session: "a", Name: "UserPromptSubmit", PID: 42, Started: 7}, base)
+	a.update(base)
+	a.store.Apply(session.Event{Session: "a", Name: "SessionEnd"}, base)
+	a.store.Apply(session.Event{Session: "b", Name: "SessionStart", PID: 42, Started: 7}, base)
+	a.update(base)
+	a.store.Apply(session.Event{Session: "b", Name: "SessionEnd"}, base.Add(time.Second))
+	a.update(base.Add(snap.Duration))
+	if len(a.views) != 0 || a.n != 0 {
+		t.Errorf("%d bonhommes, fenêtre pour %d : plus personne, attendu rien", len(a.views), a.n)
+	}
+}
+
 // Les sous-agents d'une session apparaissent en particules au-dessus de la tête du
 // clawd : une par agent, dans la fenêtre, au-dessus de la ligne des pieds. Le sprite
 // suit l'état (working quand le parent travaille et l'agent outille ; throttle quand

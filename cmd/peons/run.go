@@ -100,7 +100,8 @@ type view struct {
 	// dying : l'instant où sa session est partie. Figé dans sa dernière pose, il se
 	// désagrège (dust) avant de quitter sa place. Zéro : il est là.
 	dying   time.Time
-	dust    *snap.Snap    // nil : rien à désagréger, il part aussitôt
+	heir    *session.Session // la session qui lui succède dans le même processus (/resume, /clear) : elle prend sa place quand il a fini de se désagréger
+	dust    *snap.Snap       // nil : rien à désagréger, il part aussitôt
 	dustAt  time.Duration // où en est la désagrégation, au dernier update
 	dustBuf *image.NRGBA  // où elle est dessinée : la fenêtre, en pixels d'art
 
@@ -586,6 +587,9 @@ func (a *app) sync(now time.Time) {
 	for _, v := range a.views {
 		switch {
 		case !here(v) && now.Sub(v.dying) >= snap.Duration: // désagrégé : il quitte sa place
+			if v.heir != nil && slices.Contains(all, v.heir) { // son successeur la reprend : l'île ne bouge pas
+				views = append(views, a.arrival(v.heir, now))
+			}
 		case here(v) && !slices.Contains(all, v.sess):
 			a.startDust(v, now)
 			views = append(views, v)
@@ -594,13 +598,16 @@ func (a *app) sync(now time.Time) {
 		}
 	}
 	for _, s := range all { // les nouvelles sessions, à la suite (le Store les range par arrivée)
-		if !slices.ContainsFunc(views, func(v *view) bool { return here(v) && v.sess == s }) {
-			v := &view{sess: s}
-			if a.appeared && a.portalFX != nil { // un nouveau venu tombe d'un portail
-				v.born = now
-			}
-			views = append(views, v)
+		if slices.ContainsFunc(views, func(v *view) bool { return here(v) && v.sess == s || v.heir == s }) {
+			continue
 		}
+		// la suite d'une session qui s'en va (/resume, /clear) attend qu'elle ait fini de
+		// se désagréger pour prendre sa place, au lieu d'en ouvrir une autre
+		if i := slices.IndexFunc(views, func(v *view) bool { return !here(v) && v.heir == nil && v.sess.SameProcess(s) }); i >= 0 {
+			views[i].heir = s
+			continue
+		}
+		views = append(views, a.arrival(s, now))
 	}
 	if slices.Equal(views, a.views) {
 		return
@@ -609,6 +616,15 @@ func (a *app) sync(now time.Time) {
 	a.views = views
 	a.dirty = true
 	a.resize(a.slots())
+}
+
+// arrival donne la vue d'une session qui prend une place : un nouveau venu tombe d'un portail.
+func (a *app) arrival(s *session.Session, now time.Time) *view {
+	v := &view{sess: s}
+	if a.appeared && a.portalFX != nil {
+		v.born = now
+	}
+	return v
 }
 
 // resize adapte la fenêtre au nombre d'emplacements, autour du même axe vertical.

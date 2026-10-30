@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,30 @@ func TestStaleWorkBecomesIdle(t *testing.T) {
 	s.Apply(ev("a", "PermissionRequest"), at(time.Minute))
 	if got := sess.Snapshot(at(5 * time.Hour)); got.Activity != mood.Awaiting {
 		t.Errorf("Awaiting ne doit pas expirer : %+v", got)
+	}
+}
+
+// Un processus Claude Code ne porte qu'une session : la nouvelle (/resume, /clear)
+// remplace l'ancienne, même si son SessionEnd n'est pas encore arrivé.
+func TestNewSessionReplacesPreviousOfSameProcess(t *testing.T) {
+	var s Store
+	s.Apply(Event{Session: "a", Name: "SessionStart", PID: 1, Started: 10}, at(0))
+	s.Apply(Event{Session: "other", Name: "SessionStart", PID: 2, Started: 20}, at(0))
+	s.Apply(Event{Session: "b", Name: "SessionStart", PID: 1, Started: 10}, at(time.Second))
+	got := []string{}
+	for _, sess := range s.Sessions() {
+		got = append(got, sess.ID)
+	}
+	if !slices.Equal(got, []string{"other", "b"}) {
+		t.Errorf("sessions %v, attendu [other b]", got)
+	}
+	if s.Apply(ev("a", "SessionEnd"), at(2*time.Second)) {
+		t.Error("le SessionEnd tardif de l'ancienne ne change plus rien")
+	}
+	// même PID mais autre date de lancement : un autre processus, une session de plus
+	s.Apply(Event{Session: "c", Name: "SessionStart", PID: 1, Started: 99}, at(3*time.Second))
+	if len(s.Sessions()) != 3 {
+		t.Errorf("%d sessions, attendu 3", len(s.Sessions()))
 	}
 }
 

@@ -153,6 +153,9 @@ func (s *Store) Apply(ev Event, now time.Time) bool {
 	}
 	if ev.PID != 0 {
 		sess.PID, sess.Started = ev.PID, ev.Started
+		if created {
+			s.dropPredecessors(sess)
+		}
 	}
 	if ev.Transcript != "" {
 		sess.Transcript = ev.Transcript
@@ -438,6 +441,19 @@ func (s *Store) add(id string, now time.Time) *Session {
 	sess := &Session{ID: id, Opened: now, Last: now, Snap: mood.Snapshot{Activity: mood.Idle, Since: now}}
 	s.sessions = append(s.sessions, sess)
 	return sess
+}
+
+// SameProcess dit si les deux sessions tournent dans le même processus Claude Code :
+// /resume et /clear y ouvrent une nouvelle session, qui prend la suite de l'ancienne.
+func (sess *Session) SameProcess(o *Session) bool {
+	return sess.PID != 0 && sess.PID == o.PID && sess.Started == o.Started
+}
+
+// dropPredecessors retire les sessions que sess remplace : un processus n'en porte
+// qu'une à la fois, et le SessionEnd de l'ancienne peut arriver après le
+// SessionStart de la nouvelle.
+func (s *Store) dropPredecessors(sess *Session) {
+	s.sessions = slices.DeleteFunc(s.sessions, func(o *Session) bool { return o != sess && o.SameProcess(sess) })
 }
 
 func (s *Store) remove(id string) bool {
