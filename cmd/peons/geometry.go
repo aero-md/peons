@@ -90,15 +90,18 @@ type frame struct {
 func (a *app) frameFor(n int) frame {
 	var f frame
 	var above int
+	// les engrenages du /resume tiennent toujours dans la fenêtre : sa hauteur ne change
+	// pas quand l'animation joue (le bonhomme ne bouge pas à l'écran)
+	gearTop := gearBase + a.gearAnim().Size().Y
 	if a.prefs.HideIsland {
 		// sans île : ce que dessinent les bonhommes, jusqu'à la ligne des pieds ; le bas
 		// de la roche du mineur, qui s'enfonce d'habitude dans l'herbe, est coupé au sol
-		f.g, above = bareGeometry(a.crowd, n), -a.crowd.reach.Min.Y
+		f.g, above = bareGeometry(a.crowd, n), max(-a.crowd.reach.Min.Y, gearTop)
 	} else {
 		// au-dessus du sol : de quoi contenir toutes les poses (bulle, piston haut…) ;
 		// les corps sont centrés sur l'île, à bonne distance de ses bords, et la fenêtre
 		// contient aussi ce qui déborde (une île manuelle trop petite)
-		above = max(headroom+32, a.char.Height())
+		above = max(headroom+32, a.char.Height(), gearTop)
 		f.below = a.terr.Height() - a.terr.Feet // sous les pieds : le bas de l'île
 		f.g = islandGeometry(a.terr, a.crowd, n, a.manualSections(), islandPad)
 	}

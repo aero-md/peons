@@ -27,6 +27,8 @@ func runHook() {
 		Name    string `json:"hook_event_name"`
 		Tool    string `json:"tool_name"`
 		Journal string `json:"transcript_path"`
+		Source  string `json:"source"` // SessionStart : startup, resume, clear, compact
+		Reason  string `json:"reason"` // SessionEnd : resume, clear, logout…
 		// Un événement issu d'un sous-agent (outil Agent/Task) porte le session_id du
 		// PARENT mais, en plus, l'agent_id/agent_type du sous-agent (vérifié au runtime :
 		// PreToolUse, PostToolUse et SubagentStop les portent). Vide pour le fil principal.
@@ -37,7 +39,7 @@ func runHook() {
 	if json.NewDecoder(io.LimitReader(os.Stdin, 8<<20)).Decode(&in) != nil {
 		return
 	}
-	ev := session.Event{Session: in.Session, Name: in.Name, Cwd: in.Cwd, Tool: in.Tool, Transcript: in.Journal, Agent: in.AgentID, AgentType: in.AgentType, At: time.Now().UnixNano()}
+	ev := session.Event{Session: in.Session, Name: in.Name, Cwd: in.Cwd, Tool: in.Tool, Transcript: in.Journal, Agent: in.AgentID, AgentType: in.AgentType, Source: in.Source, Reason: in.Reason, At: time.Now().UnixNano()}
 	// le processus Claude Code permet à l'app de voir un terminal fermé
 	// (aucun SessionEnd n'est envoyé dans ce cas), et de retrouver son terminal au clic.
 	// Trouver ce processus coûte une vingtaine de ms : on ne le fait qu'aux événements

@@ -419,3 +419,147 @@ func TestAgentOrderIsAppearance(t *testing.T) {
 		t.Errorf("ordre %q, attendu zma (ordre d'apparition)", got)
 	}
 }
+
+// Idle avec un agent de fond vivant : Waiting ; il tombe à la SubagentStop ou à l'expiration.
+func TestSnapshotWaitingForBackgroundAgent(t *testing.T) {
+	var s Store
+	s.Apply(ev("a", "SessionStart"), at(0))
+	s.Apply(ev("a", "Stop"), at(time.Second))
+	sess := s.Sessions()[0]
+	if sess.Snapshot(at(2 * time.Second)).Waiting {
+		t.Error("sans sous-agent, pas d'attente")
+	}
+	s.Apply(agentEv("a", "ag1", "PreToolUse"), at(2*time.Second))
+	got := sess.Snapshot(at(3 * time.Second))
+	if !got.Waiting || got.Activity != mood.Idle || !got.Answered {
+		t.Errorf("Idle + agent vivant : %+v, attendu Waiting (Answered gardé)", got)
+	}
+	if exp := sess.NextAgentExpiry(at(3 * time.Second)); !exp.Equal(at(2*time.Second + AgentExpire)) {
+		t.Errorf("expiration à %v, attendu %v", exp, at(2*time.Second+AgentExpire))
+	}
+	if sess.Snapshot(at(2*time.Second + AgentExpire)).Waiting {
+		t.Error("agent expiré : plus d'attente")
+	}
+	s.Apply(agentEv("a", "ag1", "SubagentStop"), at(4*time.Second))
+	if sess.Snapshot(at(5 * time.Second)).Waiting {
+		t.Error("après SubagentStop : plus d'attente")
+	}
+	// au travail, ce n'est pas « attendre » (l'agent est suivi en particule, le corps mine)
+	s.Apply(ev("a", "UserPromptSubmit"), at(6*time.Second))
+	s.Apply(agentEv("a", "ag2", "PreToolUse"), at(7*time.Second))
+	if sess.Snapshot(at(8 * time.Second)).Waiting {
+		t.Error("parent au travail : pas Waiting")
+	}
+}
+
+// /resume : la nouvelle session prolonge l'ancienne (même processus), quel que soit
+// l'ordre des deux événements ; sans « resume » (ni /clear, ni démarrage), rien n'est prolongé.
+func TestResumeLinksNewSessionToOld(t *testing.T) {
+	for _, endFirst := range []bool{true, false} {
+		var s Store
+		s.Apply(Event{Session: "a", Name: "SessionStart", PID: 1, Started: 7}, at(0))
+		old := s.Sessions()[0]
+		end := func(d time.Duration) { s.Apply(Event{Session: "a", Name: "SessionEnd", Reason: "resume"}, at(d)) }
+		begin := func(d time.Duration) {
+			s.Apply(Event{Session: "b", Name: "SessionStart", PID: 1, Started: 7, Source: "resume"}, at(d))
+		}
+		if endFirst {
+			end(time.Second)
+			if got := s.Sessions(); len(got) != 1 || got[0] != old {
+				t.Fatalf("après le SessionEnd « resume », l'ancienne attend sa suite : %d sessions", len(got))
+			}
+			begin(time.Second + 50*time.Millisecond)
+		} else {
+			begin(time.Second)
+			end(time.Second + 50*time.Millisecond)
+		}
+		got := s.Sessions()
+		if len(got) != 1 || got[0].ID != "b" {
+			t.Fatalf("endFirst=%v : sessions %d, attendu la seule « b »", endFirst, len(got))
+		}
+		if prev, kind := got[0].TakeRelay(); prev != old || kind != RelayResume {
+			t.Errorf("endFirst=%v : « b » doit prolonger « a » : %v", endFirst, prev)
+		}
+		if prev, _ := got[0].TakeRelay(); prev != nil {
+			t.Errorf("endFirst=%v : le relais ne se passe qu'une fois", endFirst)
+		}
+	}
+}
+
+// Sans processus connu, la seule session qui attend sa suite est prolongée ; avec deux
+// candidates, on ne devine pas.
+func TestResumeWithoutPID(t *testing.T) {
+	var s Store
+	s.Apply(ev("a", "SessionStart"), at(0))
+	old := s.Sessions()[0]
+	s.Apply(Event{Session: "a", Name: "SessionEnd", Reason: "resume"}, at(time.Second))
+	s.Apply(Event{Session: "b", Name: "SessionStart", Source: "resume"}, at(time.Second))
+	if prev, _ := s.Sessions()[len(s.Sessions())-1].TakeRelay(); len(s.Sessions()) != 1 || prev != old {
+		t.Fatalf("« b » doit prolonger « a » : %d sessions", len(s.Sessions()))
+	}
+
+	var amb Store
+	amb.Apply(ev("a", "SessionStart"), at(0))
+	amb.Apply(ev("c", "SessionStart"), at(0))
+	amb.Apply(Event{Session: "a", Name: "SessionEnd", Reason: "resume"}, at(time.Second))
+	amb.Apply(Event{Session: "c", Name: "SessionEnd", Reason: "resume"}, at(time.Second))
+	amb.Apply(Event{Session: "b", Name: "SessionStart", Source: "resume"}, at(time.Second))
+	for _, sess := range amb.Sessions() {
+		if prev, _ := sess.TakeRelay(); sess.ID == "b" && prev != nil {
+			t.Error("deux candidates : on ne choisit pas")
+		}
+	}
+}
+
+// Les autres démarrages et fins n'ont rien d'un relais.
+func TestNoResumeLinkOtherwise(t *testing.T) {
+	for _, source := range []string{"", "startup", "compact"} {
+		var s Store
+		s.Apply(Event{Session: "a", Name: "SessionStart", PID: 1, Started: 7}, at(0))
+		s.Apply(Event{Session: "b", Name: "SessionStart", PID: 1, Started: 7, Source: source}, at(time.Second))
+		if prev, _ := s.Sessions()[len(s.Sessions())-1].TakeRelay(); prev != nil {
+			t.Errorf("source %q : pas de relais attendu", source)
+		}
+	}
+	var s Store
+	s.Apply(ev("a", "SessionStart"), at(0))
+	s.Apply(Event{Session: "a", Name: "SessionEnd", Reason: "logout"}, at(time.Second))
+	if len(s.Sessions()) != 0 {
+		t.Error("un SessionEnd qui n'est ni « resume » ni « clear » retire la session tout de suite")
+	}
+}
+
+// Si la suite n'arrive jamais, l'ancienne part au bout de ResumeGrace.
+func TestResumeGraceExpires(t *testing.T) {
+	var s Store
+	s.Apply(ev("a", "SessionStart"), at(0))
+	s.Apply(Event{Session: "a", Name: "SessionEnd", Reason: "resume"}, at(time.Second))
+	if next := s.NextCheck(at(time.Second)); next.IsZero() || next.After(at(time.Second+ResumeGrace)) {
+		t.Errorf("prochaine vérification %v, attendue au plus tard à la fin du délai", next)
+	}
+	if s.Prune(at(time.Second+ResumeGrace-time.Millisecond), nil) || len(s.Sessions()) != 1 {
+		t.Fatal("elle attend encore sa suite")
+	}
+	if !s.Prune(at(time.Second+ResumeGrace), nil) || len(s.Sessions()) != 0 {
+		t.Error("sans suite, elle part comme un départ ordinaire")
+	}
+}
+
+// /clear : même relais que /resume, mais l'affichage le distingue (explosion, pas engrenages).
+func TestClearIsARelayToo(t *testing.T) {
+	var s Store
+	s.Apply(Event{Session: "a", Name: "SessionStart", PID: 1, Started: 7}, at(0))
+	old := s.Sessions()[0]
+	s.Apply(Event{Session: "a", Name: "SessionEnd", Reason: "clear"}, at(time.Second))
+	if len(s.Sessions()) != 1 {
+		t.Fatal("après un SessionEnd « clear », l'ancienne attend sa suite")
+	}
+	s.Apply(Event{Session: "b", Name: "SessionStart", PID: 1, Started: 7, Source: "clear"}, at(time.Second))
+	got := s.Sessions()
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("sessions %d, attendu la seule « b »", len(got))
+	}
+	if prev, kind := got[0].TakeRelay(); prev != old || kind != RelayClear {
+		t.Errorf("relais %v (%q), attendu « a » par clear", prev, kind)
+	}
+}

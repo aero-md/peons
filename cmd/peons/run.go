@@ -20,6 +20,8 @@ import (
 
 	"peons/assets"
 	"peons/internal/avatar"
+	"peons/internal/burst"
+	"peons/internal/gears"
 	"peons/internal/ipc"
 	"peons/internal/mood"
 	"peons/internal/prefs"
@@ -44,7 +46,9 @@ var opt struct {
 	// (double-clic), les réglages s'ouvrent.
 	background bool
 	pin        string
-	dx         int // décalage horizontal de la fenêtre, pour montrer plusieurs copies côte à côte
+	resume     bool // démo : rejoue un /resume en boucle
+	clear      bool // démo : rejoue un /clear en boucle
+	dx        int // décalage horizontal de la fenêtre, pour montrer plusieurs copies côte à côte
 }
 
 const (
@@ -97,6 +101,18 @@ type view struct {
 	particles []placed
 	partSig   string
 
+	// gears : l'instant où ses engrenages ont démarré (/resume : la nouvelle session
+	// reprend ce bonhomme au lieu d'en faire naître un autre). Zéro : pas d'animation.
+	// gearFrame : l'image à montrer maintenant, nil hors animation.
+	gears     time.Time
+	gearFrame *image.NRGBA
+
+	// burst : l'explosion du /clear (le clawd éclate puis se reconstitue, même bonhomme,
+	// même place), nil hors animation ; burstAt : où elle en est au dernier update.
+	burst      *burst.Burst
+	burstStart time.Time
+	burstAt    time.Duration
+
 	// dying : l'instant où sa session est partie. Figé dans sa dernière pose, il se
 	// désagrège (dust) avant de quitter sa place. Zéro : il est là.
 	dying   time.Time
@@ -115,6 +131,7 @@ type app struct {
 	char     *avatar.Character
 	agentFX  map[session.AgentKind]*image.NRGBA // sprites des particules de sous-agents
 	portalFX *image.NRGBA                       // texture du portail d'apparition
+	gearFX   *gears.Animation                   // engrenages du /resume, chargés au premier usage (voir gearAnim)
 	cfg      mood.Config
 	ov       overlay          // la fenêtre transparente (superposée native)
 	terr     *terrain.Terrain // les morceaux de l'île
@@ -180,6 +197,8 @@ func runApp() {
 	fs.DurationVar(&opt.stats, "stats", 0, "diagnostic : écrit dans le journal l'état de la mémoire Go à cette cadence (0 : jamais)")
 	fs.IntVar(&opt.dx, "dx", 0, "décale la fenêtre de N pixels vers la droite (négatif : la gauche), pour montrer plusieurs copies côte à côte")
 	fs.StringVar(&opt.pin, "pin", "", "montre un seul bonhomme figé dans ce corps (normal, alert, sleeping, bench, mining, compacting), pour vérifier les sprites ; implique -demo")
+	fs.BoolVar(&opt.resume, "resume", false, "un seul bonhomme qui rejoue un /resume en boucle, pour voir les engrenages ; implique -demo")
+	fs.BoolVar(&opt.clear, "clear", false, "un seul bonhomme qui rejoue un /clear en boucle, pour voir l'explosion ; implique -demo")
 	fs.BoolVar(&opt.demo, "demo", false, "trois bonhommes de démonstration (clic gauche : travaille, clic droit : attend, clic du milieu : s'en va) ; n'écoute pas les hooks")
 	fs.BoolVar(&opt.background, "background", false, "lancé par le hook : n'ouvre pas la fenêtre de réglages")
 	fs.Parse(os.Args[1:])
@@ -227,7 +246,7 @@ func runApp() {
 	}
 	a.tipSize = clampTipSize(a.prefs.TipScale)
 	guiErrors = !opt.trace
-	if opt.pin != "" {
+	if opt.pin != "" || opt.resume || opt.clear {
 		opt.demo = true
 	}
 	if !opt.demo && ipc.Running() {
@@ -544,8 +563,17 @@ func (a *app) update(now time.Time) (next time.Time) {
 		var states []session.AgentState
 		if opt.pin == "" {
 			states = v.sess.AgentStates(now, state.Activity == mood.Idle)
+			if state.Waiting { // l'attente finit quand le dernier agent expire, sans événement
+				upd(v.sess.NextAgentExpiry(now))
+			}
 		}
 		if flip := a.layoutAgents(i, v, states, now); !flip.IsZero() {
+			upd(flip)
+		}
+		if flip := a.stepGears(v, now); !flip.IsZero() {
+			upd(flip)
+		}
+		if flip := a.stepBurst(v, now); !flip.IsZero() {
 			upd(flip)
 		}
 		if sig := particlesSig(v.particles); sig != v.partSig {
@@ -579,6 +607,7 @@ func (a *app) slots() int {
 func (a *app) sync(now time.Time) {
 	all := a.store.Sessions()
 	all = all[max(0, len(all)-maxShown):]
+	a.handoff(all, now)
 	here := func(v *view) bool { return v.dying.IsZero() }
 	if len(all) == len(a.views) && !slices.ContainsFunc(a.views, func(v *view) bool { return !here(v) || !slices.Contains(all, v.sess) }) {
 		return
@@ -616,6 +645,122 @@ func (a *app) sync(now time.Time) {
 	a.views = views
 	a.dirty = true
 	a.resize(a.slots())
+}
+
+// handoff : une session ouverte par /resume prolonge celle d'avant. Son bonhomme reste
+// là, sans désagrégation ni portail : il passe à la nouvelle session et deux engrenages
+// tournent au-dessus de sa tête, le temps que le contexte se recharge.
+func (a *app) handoff(all []*session.Session, now time.Time) {
+	for _, s := range all {
+		prev, kind := s.TakeRelay()
+		if prev == nil {
+			continue
+		}
+		i := slices.IndexFunc(a.views, func(v *view) bool { return v.dying.IsZero() && v.sess == prev })
+		if i < 0 { // l'ancien n'était pas (ou plus) affiché : la nouvelle arrive comme n'importe laquelle
+			continue
+		}
+		if a.selected == prev.ID {
+			a.selected = s.ID
+		}
+		v := a.views[i]
+		v.sess = s
+		v.gears, v.gearFrame, v.burst = time.Time{}, nil, nil // une animation en cours cède la place
+		switch kind {
+		case session.RelayClear:
+			a.startBurst(i, v, now)
+		default:
+			v.gears = now
+		}
+		a.dirty = true
+	}
+}
+
+// startBurst fige le bonhomme i dans sa pose et prépare son explosion.
+func (a *app) startBurst(i int, v *view, now time.Time) {
+	img, at, ok := a.poseImage(v)
+	if !ok { // jamais résolu, donc jamais dessiné : rien à faire éclater
+		return
+	}
+	if a.tipView == v {
+		a.hideTip()
+	}
+	// ce qui reste visible : la fenêtre, jusqu'à la ligne des pieds (en dessous, l'île)
+	o := a.dustOrigin(i)
+	limit := image.Rect(1-o.X, 1-o.Y, a.W/a.ui-1-o.X, 0)
+	v.burst, v.burstStart, v.burstAt = burst.New(img, at, limit, a.rng), now, 0
+}
+
+// stepBurst avance l'explosion du bonhomme v et renvoie l'instant de sa prochaine image
+// (zéro s'il n'y en a pas). À la fin le bonhomme reprend son dessin normal, qui est
+// celui qu'il vient de reconstituer.
+func (a *app) stepBurst(v *view, now time.Time) time.Time {
+	if v.burst == nil {
+		return time.Time{}
+	}
+	if v.burstAt = now.Sub(v.burstStart); v.burstAt >= burst.Duration {
+		v.burst, v.burstAt = nil, 0
+		a.dirty = true
+		return time.Time{}
+	}
+	a.dirty = true
+	return now.Add(dustFrame)
+}
+
+// burstLayer : l'explosion du bonhomme i à l'instant du dernier update, dessinée dans
+// une image de la taille de la fenêtre (pixels d'art), refaite à chaque image.
+func (a *app) burstLayer(i int, v *view) []placed {
+	w, h := a.W/a.ui, a.H/a.ui
+	if v.dustBuf == nil || v.dustBuf.Rect.Dx() != w || v.dustBuf.Rect.Dy() != h {
+		v.dustBuf = image.NewNRGBA(image.Rect(0, 0, w, h))
+	}
+	clear(v.dustBuf.Pix)
+	v.burst.Draw(v.dustBuf, a.dustOrigin(i), v.burstAt)
+	return []placed{{img: v.dustBuf, transient: true}}
+}
+
+// gearAnim charge les images des engrenages à la première demande : tant qu'aucun
+// /resume n'a lieu, ils ne coûtent rien. Elles sont embarquées (le test des assets
+// garantit qu'elles se chargent) ; à tout hasard, sans elles l'animation est vide.
+func (a *app) gearAnim() *gears.Animation {
+	if a.gearFX == nil {
+		var err error
+		if a.gearFX, err = gears.Load(assets.FS); err != nil {
+			a.gearFX = &gears.Animation{}
+		}
+	}
+	return a.gearFX
+}
+
+// stepGears avance l'animation d'engrenages du bonhomme v et renvoie l'instant de sa
+// prochaine image (zéro s'il n'y en a pas). Elle marque la fenêtre à redessiner quand
+// l'image change.
+func (a *app) stepGears(v *view, now time.Time) time.Time {
+	if v.gears.IsZero() {
+		return time.Time{}
+	}
+	el := now.Sub(v.gears)
+	idx, ok := a.gearAnim().Frame(el)
+	if !ok { // finie : les engrenages disparaissent
+		v.gears, v.gearFrame = time.Time{}, nil
+		a.dirty = true
+		return time.Time{}
+	}
+	if f := a.gearAnim().Frames[idx]; f != v.gearFrame {
+		v.gearFrame = f
+		a.dirty = true
+	}
+	return v.gears.Add(gears.NextFrame(el))
+}
+
+// gearLayer : les engrenages du bonhomme i, centrés au-dessus de sa tête.
+func (a *app) gearLayer(i int, v *view) []placed {
+	if v.gearFrame == nil {
+		return nil
+	}
+	s, u := v.gearFrame.Rect.Size(), a.ui
+	center := a.slotsX0 + i*a.crowd.slot + spriteW/2 // centre horizontal du corps, en pixels d'art
+	return []placed{{img: v.gearFrame, at: image.Pt((center-s.X/2)*u, a.ground-(gearBase+s.Y)*u), transient: true}}
 }
 
 // arrival donne la vue d'une session qui prend une place : un nouveau venu tombe d'un portail.
@@ -662,22 +807,31 @@ func (a *app) startDust(v *view, now time.Time) {
 	if a.tipView == v {
 		a.hideTip()
 	}
-	ls, err := a.char.Layers(string(v.look.Body), v.pose, string(v.look.Emotion))
-	if err != nil { // jamais résolu, donc jamais dessiné : il part sans rien montrer
+	img, at, ok := a.poseImage(v)
+	if !ok { // jamais résolu, donc jamais dessiné : il part sans rien montrer
 		v.dying = now.Add(-snap.Duration)
 		return
 	}
-	// la pose composée, dans le repère de l'emplacement : x depuis le bord gauche du
-	// corps, y depuis la ligne des pieds
+	v.dust = snap.New(img, at, a.rng)
+}
+
+// poseImage compose la pose actuelle du bonhomme (corps, yeux, effets) en une image, et
+// donne où la poser : dans le repère de l'emplacement, x depuis le bord gauche du corps,
+// y depuis la ligne des pieds. Faux s'il n'a jamais été résolu.
+func (a *app) poseImage(v *view) (img *image.NRGBA, at image.Point, ok bool) {
+	ls, err := a.char.Layers(string(v.look.Body), v.pose, string(v.look.Emotion))
+	if err != nil {
+		return nil, image.Point{}, false
+	}
 	var r image.Rectangle
 	for _, l := range ls {
 		r = r.Union(l.Image.Bounds().Add(l.At))
 	}
-	img := image.NewNRGBA(r)
+	img = image.NewNRGBA(r)
 	for _, l := range ls {
 		draw.Draw(img, l.Image.Bounds().Add(l.At), l.Image, image.Point{}, draw.Over)
 	}
-	v.dust = snap.New(img, image.Pt(r.Min.X, r.Min.Y-ls[0].Image.Bounds().Dy()), a.rng)
+	return img, image.Pt(r.Min.X, r.Min.Y-ls[0].Image.Bounds().Dy()), true
 }
 
 // dustOrigin : où se trouve, dans la fenêtre (pixels d'art), le repère de la
@@ -819,10 +973,32 @@ func (a *app) seedDemo(now time.Time) {
 		a.store.Apply(session.Event{Session: "pin", Name: "SessionStart", Cwd: opt.pin, Transcript: demoJournal(55, "Épinglé : "+opt.pin)}, now)
 		return
 	}
+	if opt.resume || opt.clear { // un seul bonhomme, qui « reprend » (ou « efface ») une session toutes les quelques secondes
+		a.store.Apply(session.Event{Session: "reprise-0", Name: "SessionStart", Cwd: "resume", Transcript: demoJournal(40, "Session reprise")}, now)
+		a.demoRelay(0)
+		return
+	}
 	a.store.Apply(session.Event{Session: "démarrage", Name: "SessionStart", Cwd: "démarrage", Transcript: demoJournal(35, "Refonte de la page d'accueil")}, now)
 	a.store.Apply(session.Event{Session: "fini", Name: "Stop", Cwd: "réponse finie", Transcript: demoJournal(70, "Correction du bug de pagination dans la liste")}, now)
 	a.store.Apply(session.Event{Session: "attend", Name: "PermissionRequest", Cwd: "attend", Tool: "Bash", Transcript: demoJournal(92, "Un titre de session volontairement très long pour montrer que le nom est coupé à cinquante caractères")}, now)
 	a.demoVisitor() // un visiteur qui arrive par un portail puis repart, en boucle
+}
+
+// demoRelay rejoue en boucle ce que fait Claude Code à un /resume (ou un /clear avec
+// -clear) : la session n se termine (SessionEnd), la suivante démarre (SessionStart).
+// Une pause après la fin de l'animation laisse voir le clawd seul.
+func (a *app) demoRelay(n int) {
+	kind, wait := "resume", gears.Duration
+	if opt.clear {
+		kind, wait = "clear", burst.Duration
+	}
+	time.AfterFunc(wait+1500*time.Millisecond, func() {
+		a.post(session.Event{Session: fmt.Sprintf("reprise-%d", n), Name: "SessionEnd", Reason: kind})
+		time.AfterFunc(60*time.Millisecond, func() {
+			a.post(session.Event{Session: fmt.Sprintf("reprise-%d", n+1), Name: "SessionStart", Cwd: kind, Source: kind, Transcript: demoJournal(40, "Session reprise")})
+			a.demoRelay(n + 1)
+		})
+	})
 }
 
 // demoVisitor fait, en boucle, arriver un clawd par un portail puis repartir en
@@ -875,7 +1051,7 @@ func removeDemoJournals() {
 func (a *app) viewAt(x, y float32) (*view, bool) {
 	for i := len(a.views) - 1; i >= 0; i-- {
 		v := a.views[i]
-		if !v.dying.IsZero() || !v.born.IsZero() { // il s'en va ou il arrive : on ne le pointe pas
+		if !v.dying.IsZero() || !v.born.IsZero() || v.burst != nil { // il s'en va, il arrive ou il éclate : on ne le pointe pas
 			continue
 		}
 		for _, p := range a.layout(i, v) {
@@ -933,12 +1109,15 @@ func (a *app) layout(i int, v *view) []placed {
 	if !v.born.IsZero() {
 		return a.portalLayer(i, v)
 	}
+	if v.burst != nil {
+		return a.burstLayer(i, v)
+	}
 	ls, err := a.char.Layers(string(v.look.Body), v.pose, string(v.look.Emotion))
 	if err != nil {
 		panic(err)
 	}
 	// le corps et ses effets, puis les particules des sous-agents au-dessus de la tête
-	return append(a.place(i, ls), v.particles...)
+	return append(append(a.place(i, ls), v.particles...), a.gearLayer(i, v)...)
 }
 
 // place positionne des calques dans l'emplacement i : l'image du corps (premier
@@ -968,6 +1147,10 @@ const (
 	// agentStaggerMax : décalage de hauteur maximal d'une particule (tiré de son id),
 	// pour qu'elles ne flottent pas toutes au même niveau.
 	agentStaggerMax = 3
+	// gearBase : bas des engrenages du /resume, en pixels d'art au-dessus du sol (un peu
+	// au-dessus de la tête) ; la fenêtre leur garde la place (voir frameFor).
+	gearBase = 24
+
 	agentStep       = 10 // écart horizontal voulu d'une particule à la suivante (≥ 2 px entre sprites)
 	agentCell       = 7  // largeur de la plus grande particule ; les plus petites y sont centrées
 )

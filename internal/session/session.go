@@ -87,7 +87,16 @@ type Event struct {
 	At      int64  `json:"at,omitempty"`
 	PID     uint32 `json:"pid,omitempty"`     // processus Claude Code, pour détecter un terminal fermé
 	Started int64  `json:"started,omitempty"` // sa date de création, contre la réutilisation du PID
+	// Source (SessionStart : startup, resume, clear, compact) et Reason (SessionEnd :
+	// resume, clear, logout…) disent pourquoi une session s'ouvre ou se ferme. Avec
+	// « resume » ou « clear », la nouvelle session prend la suite de l'ancienne.
+	Source string `json:"source,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
+
+// ResumeGrace : après un SessionEnd « resume » ou « clear », l'ancienne session attend ce délai
+// la nouvelle (SessionStart « resume ») avant d'être oubliée comme un départ ordinaire.
+const ResumeGrace = 5 * time.Second
 
 // MaxRecent borne l'historique d'événements gardé par session.
 const MaxRecent = 6
@@ -114,6 +123,33 @@ type Session struct {
 	Started     int64
 	agents      map[string]*agentInfo // sous-agents vivants, par agent_id
 	agentSeq    int                   // compteur d'apparition des sous-agents
+	resuming    time.Time             // SessionEnd « resume » ou « clear » reçu : elle attend sa suite, puis part
+	relayFrom   *Session              // la session que celle-ci prolonge (/resume, /clear), jusqu'à ce que l'affichage la reprenne
+	relayKind   Relay                 // et par quoi
+}
+
+// Relay dit comment une session en prolonge une autre dans le même processus.
+type Relay string
+
+const (
+	RelayResume Relay = "resume" // /resume : on reprend une conversation
+	RelayClear  Relay = "clear"  // /clear : on repart d'une conversation vide
+)
+
+func relayOf(s string) Relay {
+	if r := Relay(s); r == RelayResume || r == RelayClear {
+		return r
+	}
+	return ""
+}
+
+// TakeRelay donne la session que celle-ci prolonge après un /resume ou un /clear, et
+// lequel, une seule fois : l'affichage garde alors le même bonhomme au lieu d'en faire
+// naître un autre.
+func (sess *Session) TakeRelay() (*Session, Relay) {
+	prev, kind := sess.relayFrom, sess.relayKind
+	sess.relayFrom, sess.relayKind = nil, ""
+	return prev, kind
 }
 
 // Store contient les sessions, dans l'ordre de leur première apparition (c'est
@@ -133,6 +169,12 @@ func (s *Store) Apply(ev Event, now time.Time) bool {
 		return false
 	}
 	if ev.Name == "SessionEnd" {
+		if relayOf(ev.Reason) != "" { // sa suite arrive : on la garde le temps de passer le relais
+			if old := s.find(ev.Session); old != nil {
+				old.resuming = now
+			}
+			return false
+		}
 		return s.remove(ev.Session)
 	}
 	sess, created := s.find(ev.Session), false
@@ -148,14 +190,21 @@ func (s *Store) Apply(ev Event, now time.Time) bool {
 		return created
 	}
 	sess.Last = now
+	var prev *Session // la session que celle-ci remplace dans le même processus
 	if ev.Cwd != "" {
 		sess.Project = filepath.Base(ev.Cwd)
 	}
 	if ev.PID != 0 {
 		sess.PID, sess.Started = ev.PID, ev.Started
 		if created {
-			s.dropPredecessors(sess)
+			prev = s.dropPredecessors(sess)
 		}
+	}
+	if created && ev.Name == "SessionStart" && relayOf(ev.Source) != "" {
+		if prev == nil { // processus inconnu : la seule session qui attend sa suite
+			prev = s.takeResuming(sess)
+		}
+		sess.relayFrom, sess.relayKind = prev, relayOf(ev.Source)
 	}
 	if ev.Transcript != "" {
 		sess.Transcript = ev.Transcript
@@ -247,6 +296,37 @@ func (sess *Session) busy() bool {
 // travaille, il tient compte de deux cas où aucun hook ne vient : une annulation
 // (Échap, repérée dans le journal) et un travail resté muet trop longtemps (StaleWork).
 func (sess *Session) Snapshot(now time.Time) mood.Snapshot {
+	s := sess.baseSnapshot(now)
+	s.Waiting = s.Activity == mood.Idle && sess.hasLiveAgents(now)
+	return s
+}
+
+// hasLiveAgents : un sous-agent non expiré tourne encore (lecture seule).
+func (sess *Session) hasLiveAgents(now time.Time) bool {
+	for _, a := range sess.agents {
+		if now.Sub(a.last) < AgentExpire {
+			return true
+		}
+	}
+	return false
+}
+
+// NextAgentExpiry donne l'instant où le dernier sous-agent vivant sera oublié faute
+// d'événement (zéro s'il n'y en a pas) : la fin de l'attente n'a pas d'autre signal.
+func (sess *Session) NextAgentExpiry(now time.Time) time.Time {
+	var last time.Time
+	for _, a := range sess.agents {
+		if now.Sub(a.last) < AgentExpire && a.last.After(last) {
+			last = a.last
+		}
+	}
+	if last.IsZero() {
+		return time.Time{}
+	}
+	return last.Add(AgentExpire)
+}
+
+func (sess *Session) baseSnapshot(now time.Time) mood.Snapshot {
 	if sess.busy() {
 		sess.pollInterrupt(now)
 		quiet := now.Sub(sess.Last)
@@ -374,6 +454,7 @@ func (s *Store) Prune(now time.Time, alive func(pid uint32, started int64) bool)
 	kept, changed := s.sessions[:0], false
 	for _, sess := range s.sessions {
 		gone := now.Sub(sess.Last) >= ExpireAfter ||
+			(!sess.resuming.IsZero() && now.Sub(sess.resuming) >= ResumeGrace) ||
 			(check && sess.PID != 0 && alive != nil && !alive(sess.PID, sess.Started))
 		if gone {
 			changed = true
@@ -398,6 +479,9 @@ func (s *Store) NextCheck(now time.Time) time.Time {
 	}
 	for _, sess := range s.sessions {
 		soon(sess.Last.Add(ExpireAfter))
+		if !sess.resuming.IsZero() {
+			soon(sess.resuming.Add(ResumeGrace))
+		}
 		if sess.busy() && now.Sub(sess.Last) < StaleWork {
 			soon(sess.Last.Add(StaleWork))
 		}
@@ -452,8 +536,33 @@ func (sess *Session) SameProcess(o *Session) bool {
 // dropPredecessors retire les sessions que sess remplace : un processus n'en porte
 // qu'une à la fois, et le SessionEnd de l'ancienne peut arriver après le
 // SessionStart de la nouvelle.
-func (s *Store) dropPredecessors(sess *Session) {
-	s.sessions = slices.DeleteFunc(s.sessions, func(o *Session) bool { return o != sess && o.SameProcess(sess) })
+func (s *Store) dropPredecessors(sess *Session) (prev *Session) {
+	s.sessions = slices.DeleteFunc(s.sessions, func(o *Session) bool {
+		if o == sess || !o.SameProcess(sess) {
+			return false
+		}
+		prev = o
+		return true
+	})
+	return prev
+}
+
+// takeResuming retire et rend la session qui attend sa suite (SessionEnd « resume »
+// reçu), à condition qu'elle soit la seule : sinon on ne sait pas laquelle prolonger.
+func (s *Store) takeResuming(sess *Session) *Session {
+	var found *Session
+	for _, o := range s.sessions {
+		if o != sess && !o.resuming.IsZero() {
+			if found != nil {
+				return nil
+			}
+			found = o
+		}
+	}
+	if found != nil {
+		s.sessions = slices.DeleteFunc(s.sessions, func(o *Session) bool { return o == found })
+	}
+	return found
 }
 
 func (s *Store) remove(id string) bool {

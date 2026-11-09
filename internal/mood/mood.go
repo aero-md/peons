@@ -7,6 +7,10 @@
 //	démarrage ────────────────────────── neutre ─┐
 //	réponse finie ─ happy ─ (HappyFor) ─ neutre ─┴─ (NeutralFor) ─ triste ─ (SadFor) ─ endormi ─ … ─ sollicitation
 //
+// Tant que Claude attend un agent en arrière-plan (Snapshot.Waiting), le cycle est
+// gelé au plancher « neutre » : content reste content jusqu'à HappyFor puis neutre,
+// triste et endormi repassent neutre, et rien ne descend plus bas.
+//
 // Endormi, il se réveille de temps en temps pour soulever de la fonte : BenchFor
 // de banc toutes les SleepFor de sommeil, puis il se rendort.
 //
@@ -58,6 +62,10 @@ type Snapshot struct {
 	Activity Activity
 	Since    time.Time // début de l'activité courante
 	Answered bool      // vrai si Idle parce qu'une réponse vient de se terminer
+	// Waiting : Idle, mais Claude attend un agent en arrière-plan. Le bonhomme reste
+	// alors content (s'il l'était) ou neutre : jamais triste ni endormi tant qu'on
+	// attend (ce champ vient de la session, qui seule connaît les sous-agents).
+	Waiting bool
 }
 
 // Config fixe la durée des phases d'inactivité.
@@ -85,6 +93,12 @@ func (c Config) Resolve(s Snapshot, now time.Time) Look {
 		return Look{BodyCompact, Neutral}
 	}
 	d := now.Sub(s.Since)
+	if s.Waiting { // plancher : neutre. Content jusqu'à HappyFor s'il l'était, jamais triste ni endormi
+		if d < c.HappyFor && s.Answered {
+			return Look{BodyNormal, Happy}
+		}
+		return Look{BodyNormal, Neutral}
+	}
 	switch {
 	case d < c.HappyFor && s.Answered:
 		return Look{BodyNormal, Happy}
@@ -123,6 +137,12 @@ func (c Config) NextChange(s Snapshot, now time.Time) time.Time {
 		return time.Time{}
 	}
 	d := now.Sub(s.Since)
+	if s.Waiting { // seule la fin du content change quelque chose ; la fin de l'attente vient de la session
+		if d < c.HappyFor && s.Answered {
+			return s.Since.Add(c.HappyFor)
+		}
+		return time.Time{}
+	}
 	switch {
 	case d < c.HappyFor && s.Answered:
 		return s.Since.Add(c.HappyFor)
