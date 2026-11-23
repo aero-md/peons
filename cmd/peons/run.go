@@ -556,6 +556,12 @@ func (a *app) update(now time.Time) (next time.Time) {
 		if d := a.char.NextChange(string(look.Body), elapsed); d > 0 {
 			upd(now.Add(d))
 		}
+		// clignement des yeux (au repos) : son propre rythme, décalé d'un bonhomme à l'autre
+		var left time.Duration
+		v.pose.Blink, left = a.char.Blinking(string(look.Body), string(look.Emotion), elapsed, blinkSeed(v.sess.ID))
+		if left > 0 {
+			upd(now.Add(left))
+		}
 		if opt.pin == "" {
 			upd(a.cfg.NextChange(state, now))
 		}
@@ -580,7 +586,7 @@ func (a *app) update(now time.Time) (next time.Time) {
 			a.dirty = true
 			v.partSig = sig
 		}
-		if !v.drawn || v.look != v.drawLook || v.pose.Body != v.drawPose.Body || !slices.Equal(v.pose.FX, v.drawPose.FX) {
+		if !v.drawn || v.look != v.drawLook || v.pose.Body != v.drawPose.Body || v.pose.Blink != v.drawPose.Blink || !slices.Equal(v.pose.FX, v.drawPose.FX) {
 			a.dirty = true
 		}
 	}
@@ -1222,6 +1228,14 @@ func agentHover(id string) (period time.Duration, phase float64, stagger int) {
 	phase = float64((v>>9)%1000) / 1000
 	stagger = int((v >> 20) % (agentStaggerMax + 1))
 	return period, phase, stagger
+}
+
+// blinkSeed : le rythme de clignement propre à un bonhomme, tiré de l'identifiant
+// de sa session (stable, différent d'un bonhomme à l'autre).
+func blinkSeed(id string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(id))
+	return h.Sum64()
 }
 
 // hoverUp vaut 1 pendant la moitié haute du cycle, 0 pendant l'autre : la particule

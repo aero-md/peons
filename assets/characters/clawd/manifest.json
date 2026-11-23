@@ -24,7 +24,7 @@
       ]
     },
     "normal": {
-      "period": 600,
+      "period": 750,
       "frames": [
         {
           "image": "body/neutral.png",
@@ -40,7 +40,13 @@
             "y": 7
           }
         }
-      ]
+      ],
+      "blink": {
+        "image": "eyes/blinking.png",
+        "ms": 130,
+        "every": 4000,
+        "emotions": ["neutral", "sad"]
+      }
     },
     "sleeping": {
       "period": 1200,

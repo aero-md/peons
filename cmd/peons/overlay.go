@@ -146,5 +146,5 @@ func (a *app) render() {
 
 // avatarPose copie une pose : les frames d'effet ne doivent pas changer sous nos yeux.
 func avatarPose(p avatar.Pose) avatar.Pose {
-	return avatar.Pose{Body: p.Body, FX: slices.Clone(p.FX)}
+	return avatar.Pose{Body: p.Body, FX: slices.Clone(p.FX), Blink: p.Blink}
 }

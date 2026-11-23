@@ -13,6 +13,10 @@
 // Ordre de dessin : corps, yeux, puis effets. Les yeux viennent de l'émotion,
 // sauf frame qui nomme les siens (eyes.image dans le manifest).
 //
+// Un corps peut cligner des yeux (blink dans le manifest) : son horloge est à
+// part, irrégulière, indépendante des frames du corps (la respiration) ; les yeux
+// fermés se posent seulement sur l'ancre des yeux de la frame affichée.
+//
 // Convention : les pieds reposent sur la dernière ligne de l'image du corps ;
 // les images d'un même personnage ont la même largeur mais pas forcément la
 // même hauteur. Les coordonnées sont celles de l'image de la frame du corps
@@ -77,7 +81,13 @@ type manifest struct {
 			// coordonnées de la frame sont alors celles de la toile.
 			Canvas *Canvas `json:"canvas"`
 		} `json:"frames"`
-		FX []string `json:"fx"`
+		FX    []string `json:"fx"`
+		Blink *struct {
+			Image    string   `json:"image"`    // les yeux fermés, relatifs au personnage
+			MS       int      `json:"ms"`       // durée d'un clignement
+			Every    int      `json:"every"`    // intervalle moyen entre deux clignements (ms)
+			Emotions []string `json:"emotions"` // émotions qui clignent ; absent : toutes
+		} `json:"blink"`
 	} `json:"bodies"`
 	Eyes map[string]string `json:"eyes"`
 	FX   map[string]struct {
@@ -105,7 +115,57 @@ type Body struct {
 	Frames []Frame
 	Period time.Duration
 	FX     []string
+	Blink  *Blink // nil : ne cligne pas des yeux
 	holder string // l'effet dont des frames figent les autres (voir Effect.Hold) ; vide : aucun
+}
+
+// Blink : les yeux se ferment un court instant (Dur), à intervalles irréguliers,
+// sur une horloge à part. Le k-ième clignement tombe dans la seconde moitié de la
+// tranche [k·Every, (k+1)·Every), à une place tirée de (seed, k) : deux
+// clignements sont espacés de Every/2 à 3·Every/2, jamais au tout début de
+// l'animation, et sans état à garder (la place se recalcule depuis le temps).
+type Blink struct {
+	Image    *image.NRGBA
+	Dur      time.Duration
+	Every    time.Duration
+	Emotions []string // émotions qui clignent ; vide : toutes
+}
+
+// applies dit si les yeux de cette émotion clignent (pas ceux déjà fermés, ^ ^).
+func (b *Blink) applies(emotion string) bool {
+	return b != nil && (len(b.Emotions) == 0 || slices.Contains(b.Emotions, emotion))
+}
+
+// start : le début du k-ième clignement.
+func (b *Blink) start(k int64, seed uint64) time.Duration {
+	half := b.Every / 2
+	j := time.Duration(mix(seed^uint64(k)*0x9E3779B97F4A7C15) % uint64(half))
+	return time.Duration(k)*b.Every + half + j
+}
+
+// at dit si les yeux sont fermés après elapsed, et dans combien de temps ça change.
+func (b *Blink) at(elapsed time.Duration, seed uint64) (closed bool, left time.Duration) {
+	t := max(elapsed, 0)
+	k := int64(t / b.Every)
+	for i := max(k-1, 0); i <= k; i++ { // le précédent peut déborder sur cette tranche
+		if s := b.start(i, seed); s <= t && t < s+b.Dur {
+			return true, s + b.Dur - t
+		}
+	}
+	next := b.start(k, seed)
+	if next <= t {
+		next = b.start(k+1, seed)
+	}
+	return false, next - t
+}
+
+// mix brasse 64 bits (finaliseur de splitmix64) : un tirage reproductible.
+func mix(x uint64) uint64 {
+	x ^= x >> 30
+	x *= 0xBF58476D1CE4E5B9
+	x ^= x >> 27
+	x *= 0x94D049BB133111EB
+	return x ^ x>>31
 }
 
 // Sprite est une image placée par rapport au coin haut-gauche de la frame du corps.
@@ -190,10 +250,12 @@ type Character struct {
 }
 
 // Pose est l'état d'une animation à un instant : quelle frame du corps et de
-// chacun de ses effets (dans l'ordre de Body.FX).
+// chacun de ses effets (dans l'ordre de Body.FX), et si les yeux sont fermés
+// (Blink, voir Character.Blinking : At ne le remplit pas, il dépend du bonhomme).
 type Pose struct {
-	Body int
-	FX   []int
+	Body  int
+	FX    []int
+	Blink bool
 }
 
 // Key identifie la pose : deux poses de même clé se dessinent à l'identique.
@@ -203,6 +265,9 @@ func (p Pose) Key() string {
 	for _, f := range p.FX {
 		b.WriteByte('/')
 		b.WriteString(strconv.Itoa(f))
+	}
+	if p.Blink {
+		b.WriteByte('-')
 	}
 	return b.String()
 }
@@ -292,6 +357,17 @@ func Load(fsys fs.FS, dir string) (*Character, error) {
 			}
 			body.Frames = append(body.Frames, fr)
 		}
+		if bl := b.Blink; bl != nil {
+			// deux clignements ne se chevauchent jamais : Dur < Every/2 (voir Blink)
+			if bl.Image == "" || bl.MS <= 0 || bl.Every <= 2*bl.MS {
+				return nil, fmt.Errorf("corps %q : clignement invalide (image %q, %d ms toutes les %d ms : il faut every > 2×ms)", name, bl.Image, bl.MS, bl.Every)
+			}
+			img, err := readNRGBA(fsys, path.Join(dir, bl.Image))
+			if err != nil {
+				return nil, err
+			}
+			body.Blink = &Blink{Image: img, Dur: time.Duration(bl.MS) * time.Millisecond, Every: time.Duration(bl.Every) * time.Millisecond, Emotions: bl.Emotions}
+		}
 		c.Bodies[name] = body
 	}
 	for name, file := range m.Eyes {
@@ -301,7 +377,22 @@ func Load(fsys fs.FS, dir string) (*Character, error) {
 		}
 		c.Eyes[name] = img
 	}
+	for name, b := range c.Bodies {
+		for _, e := range b.Blink.emotions() {
+			if _, ok := c.Eyes[e]; !ok {
+				return nil, fmt.Errorf("corps %q : le clignement nomme l'émotion %q, inconnue", name, e)
+			}
+		}
+	}
 	return c, nil
+}
+
+// emotions : celles que nomme le clignement (nil sans clignement).
+func (b *Blink) emotions() []string {
+	if b == nil {
+		return nil
+	}
+	return b.Emotions
 }
 
 func period(ms int) time.Duration {
@@ -371,6 +462,19 @@ func (c *Character) NextChange(body string, elapsed time.Duration) time.Duration
 		}
 	}
 	return next
+}
+
+// Blinking dit si les yeux sont fermés (clignement) après elapsed depuis le
+// démarrage de l'animation du corps, et dans combien de temps ça change (0 :
+// jamais, ce corps ou cette émotion ne clignent pas). seed est propre au
+// bonhomme : deux clawd côte à côte ne clignent pas ensemble. À reporter dans
+// Pose.Blink.
+func (c *Character) Blinking(body, emotion string, elapsed time.Duration, seed uint64) (closed bool, left time.Duration) {
+	b, ok := c.Bodies[body]
+	if !ok || !b.Blink.applies(emotion) {
+		return false, 0
+	}
+	return b.Blink.at(elapsed, seed)
 }
 
 // step : index de frame après elapsed ; n == 1 ne bouge jamais.
@@ -509,6 +613,9 @@ func (c *Character) eachPlaced(f func(img *image.NRGBA, at image.Point)) {
 					for _, e := range c.Eyes {
 						eyes = append(eyes, e)
 					}
+					if b.Blink != nil {
+						eyes = append(eyes, b.Blink.Image)
+					}
 				}
 				for _, e := range eyes {
 					f(e, top.Add(eyeAt(fr.Eyes, e)))
@@ -587,8 +694,9 @@ func opaqueBounds(img *image.NRGBA) image.Rectangle {
 }
 
 // eyesOf donne les yeux d'une frame : les siens s'ils sont dessinés pour elle,
-// sinon ceux de l'émotion. nil si la frame n'a pas d'yeux.
-func (c *Character) eyesOf(fr Frame, emotion string) (*image.NRGBA, error) {
+// sinon ceux de l'émotion, fermés si blink (et que le corps cligne pour cette
+// émotion). nil si la frame n'a pas d'yeux.
+func (c *Character) eyesOf(b *Body, fr Frame, emotion string, blink bool) (*image.NRGBA, error) {
 	if fr.Eyes == nil {
 		return nil, nil
 	}
@@ -598,6 +706,9 @@ func (c *Character) eyesOf(fr Frame, emotion string) (*image.NRGBA, error) {
 	eyes, ok := c.Eyes[emotion]
 	if !ok {
 		return nil, fmt.Errorf("émotion %q inconnue", emotion)
+	}
+	if blink && b.Blink.applies(emotion) {
+		return b.Blink.Image, nil
 	}
 	return eyes, nil
 }
@@ -612,7 +723,7 @@ func (c *Character) Layers(body string, p Pose, emotion string) ([]Sprite, error
 	}
 	fr := b.Frames[mod(p.Body, len(b.Frames))]
 	out := []Sprite{{fr.Image, image.Point{}}}
-	eyes, err := c.eyesOf(fr, emotion)
+	eyes, err := c.eyesOf(b, fr, emotion, p.Blink)
 	if err != nil {
 		return nil, err
 	}
@@ -636,8 +747,11 @@ func (c *Character) AllSprites(body, emotion string) []Sprite {
 	var out []Sprite
 	for _, fr := range b.Frames {
 		out = append(out, Sprite{fr.Image, image.Point{}})
-		if eyes, err := c.eyesOf(fr, emotion); err == nil && eyes != nil {
+		if eyes, err := c.eyesOf(b, fr, emotion, false); err == nil && eyes != nil {
 			out = append(out, Sprite{eyes, eyeAt(fr.Eyes, eyes)})
+			if fr.EyesImage == nil && b.Blink.applies(emotion) { // et fermés
+				out = append(out, Sprite{b.Blink.Image, eyeAt(fr.Eyes, b.Blink.Image)})
+			}
 		}
 	}
 	for _, name := range b.FX {
@@ -662,7 +776,7 @@ func (c *Character) Compose(body string, frame int, emotion string) (*image.NRGB
 	fr := b.Frames[mod(frame, len(b.Frames))]
 	out := image.NewNRGBA(fr.Image.Bounds())
 	draw.Draw(out, out.Bounds(), fr.Image, image.Point{}, draw.Src)
-	eyes, err := c.eyesOf(fr, emotion)
+	eyes, err := c.eyesOf(b, fr, emotion, false)
 	if err != nil {
 		return nil, err
 	}

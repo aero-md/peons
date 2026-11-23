@@ -107,6 +107,10 @@ func drawn(a *app, f frame, n int) image.Rectangle {
 			}
 			poses = next
 		}
+		for _, p := range poses { // et chacune les yeux fermés (clignement)
+			p.Blink = true
+			poses = append(poses, p)
+		}
 		for bi := range b.Frames {
 			for _, p := range poses {
 				p.Body = bi

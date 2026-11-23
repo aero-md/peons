@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -503,6 +504,10 @@ func TestReachIsWhatLayersDraw(t *testing.T) {
 			}
 			poses = next
 		}
+		for _, p := range poses { // et chacune les yeux fermés (clignement)
+			p.Blink = true
+			poses = append(poses, p)
+		}
 		for bi := range b.Frames {
 			for _, p := range poses {
 				p.Body = bi
@@ -551,6 +556,10 @@ func TestSpacingIsTightestWithoutContact(t *testing.T) {
 				}
 			}
 			poses = next
+		}
+		for _, p := range poses { // et chacune les yeux fermés (clignement)
+			p.Blink = true
+			poses = append(poses, p)
 		}
 		for bi := range b.Frames {
 			for _, p := range poses {
@@ -844,5 +853,137 @@ func TestRockFramesFollowRockPNG(t *testing.T) {
 		case name != "rock.png":
 			t.Errorf("frame %d : %s, inattendue dans le cycle de la roche", i, name)
 		}
+	}
+}
+
+// Le clignement suit son propre rythme : chaque clignement dure exactement Dur,
+// deux débuts sont espacés de Every/2 à 3·Every/2, rien pendant la première
+// demi-période, et le délai rendu tombe pile sur le changement suivant. Deux
+// graines donnent deux rythmes.
+func TestBlinkRhythm(t *testing.T) {
+	c := load(t)
+	bl := c.Bodies["normal"].Blink
+	if bl == nil {
+		t.Fatal("le corps normal ne cligne pas")
+	}
+	starts := map[uint64][]time.Duration{}
+	for _, seed := range []uint64{0, 1, 42, 0xDEADBEEF} {
+		var at time.Duration
+		closed, left := c.Blinking("normal", "neutral", 0, seed)
+		if closed {
+			t.Fatalf("graine %d : yeux fermés dès le départ", seed)
+		}
+		for at < 10*time.Minute {
+			if left <= 0 {
+				t.Fatalf("graine %d à %v : aucun changement annoncé", seed, at)
+			}
+			if before, _ := c.Blinking("normal", "neutral", at+left-time.Nanosecond, seed); before != closed {
+				t.Fatalf("graine %d : changement avant les %v annoncés à %v", seed, left, at)
+			}
+			at += left
+			now, next := c.Blinking("normal", "neutral", at, seed)
+			if now == closed {
+				t.Fatalf("graine %d à %v : rien n'a changé à l'instant annoncé", seed, at)
+			}
+			if now {
+				starts[seed] = append(starts[seed], at)
+				if next != bl.Dur {
+					t.Fatalf("graine %d à %v : clignement de %v, attendu %v", seed, at, next, bl.Dur)
+				}
+			}
+			closed, left = now, next
+		}
+		s := starts[seed]
+		if len(s) == 0 || s[0] < bl.Every/2 {
+			t.Fatalf("graine %d : premiers clignements %v, attendu après %v", seed, s[:min(len(s), 3)], bl.Every/2)
+		}
+		for i := 1; i < len(s); i++ {
+			if gap := s[i] - s[i-1]; gap < bl.Every/2 || gap >= 3*bl.Every/2 {
+				t.Errorf("graine %d : %v entre deux clignements, attendu de %v à %v", seed, gap, bl.Every/2, 3*bl.Every/2)
+			}
+		}
+	}
+	if slices.Equal(starts[0], starts[1]) {
+		t.Error("deux graines, un même rythme : les clawd cligneraient ensemble")
+	}
+}
+
+// Seuls les yeux ouverts du clawd au repos clignent : ni les yeux déjà fermés
+// (happy), ni les autres corps.
+func TestBlinkOnlyIdleOpenEyes(t *testing.T) {
+	c := load(t)
+	blinks := func(body, emotion string) bool {
+		for ms := 0; ms < 20000; ms += 10 {
+			if closed, _ := c.Blinking(body, emotion, time.Duration(ms)*time.Millisecond, 7); closed {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range []string{"neutral", "sad"} {
+		if !blinks("normal", e) {
+			t.Errorf("normal/%s ne cligne pas en 20 s", e)
+		}
+	}
+	for _, look := range [][2]string{{"normal", "happy"}, {"alert", "neutral"}, {"mining", "neutral"},
+		{"compacting", "neutral"}, {"sleeping", "sleeping"}, {"bench", "neutral"}} {
+		if closed, left := c.Blinking(look[0], look[1], 3*time.Second, 7); closed || left != 0 || blinks(look[0], look[1]) {
+			t.Errorf("%s/%s cligne", look[0], look[1])
+		}
+	}
+}
+
+// Les yeux fermés remplacent ceux de l'émotion, sur l'ancre de la frame (ils
+// suivent la respiration) et centrés sur le même axe ; happy garde les siens.
+func TestBlinkLayers(t *testing.T) {
+	c := load(t)
+	b := c.Bodies["normal"]
+	open := c.Eyes["neutral"]
+	for i, fr := range b.Frames {
+		ls, err := c.Layers("normal", Pose{Body: i, Blink: true}, "neutral")
+		if err != nil {
+			t.Fatal(err)
+		}
+		eyes := ls[len(ls)-1]
+		if eyes.Image != b.Blink.Image {
+			t.Fatalf("frame %d : les yeux ne sont pas fermés", i)
+		}
+		if eyes.At.Y != fr.Eyes.Y || eyes.At.X+eyes.Image.Bounds().Dx()/2 != eyeAt(fr.Eyes, open).X+open.Bounds().Dx()/2 {
+			t.Errorf("frame %d : yeux fermés en %v, pas sur l'axe des yeux ouverts", i, eyes.At)
+		}
+	}
+	if ls, _ := c.Layers("normal", Pose{Blink: true}, "happy"); ls[len(ls)-1].Image != c.Eyes["happy"] {
+		t.Error("happy cligne")
+	}
+	if (Pose{Body: 1, Blink: true}).Key() == (Pose{Body: 1}).Key() {
+		t.Error("même clé, yeux ouverts ou fermés")
+	}
+}
+
+// Un clignement mal décrit est refusé au chargement.
+func TestBlinkIsValidated(t *testing.T) {
+	for name, blink := range map[string]string{
+		"sans image":        `{"ms": 100, "every": 3000}`,
+		"durée nulle":       `{"image": "p.png", "ms": 0, "every": 3000}`,
+		"trop rapproché":    `{"image": "p.png", "ms": 100, "every": 200}`,
+		"émotion inconnue":  `{"image": "p.png", "ms": 100, "every": 3000, "emotions": ["fâché"]}`,
+		"image introuvable": `{"image": "absente.png", "ms": 100, "every": 3000}`,
+	} {
+		fsys := fstest.MapFS{
+			"c/manifest.json": {Data: []byte(`{"version": 1, "eyes": {"neutral": "p.png"}, "fx": {},
+				"bodies": {"b": {"frames": [{"image": "p.png", "eyes": {"x": 1, "y": 0}}], "blink": ` + blink + `}}}`)},
+			"c/p.png": {Data: pngBytes(t, 2, 2, color.NRGBA{255, 0, 0, 255})},
+		}
+		if _, err := Load(fsys, "c"); err == nil {
+			t.Errorf("%s : accepté", name)
+		}
+	}
+	ok := fstest.MapFS{
+		"c/manifest.json": {Data: []byte(`{"version": 1, "eyes": {"neutral": "p.png"}, "fx": {},
+			"bodies": {"b": {"frames": [{"image": "p.png", "eyes": {"x": 1, "y": 0}}], "blink": {"image": "p.png", "ms": 100, "every": 3000}}}}`)},
+		"c/p.png": {Data: pngBytes(t, 2, 2, color.NRGBA{255, 0, 0, 255})},
+	}
+	if _, err := Load(ok, "c"); err != nil {
+		t.Errorf("clignement valide refusé : %v", err)
 	}
 }
