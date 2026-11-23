@@ -92,7 +92,7 @@ Un clic sur un bonhomme met au premier plan le terminal de sa session et le fait
 
 Un double-clic sur l'île (ou « Réglages » dans le menu de l'icône de la zone de notification) ouvre une vraie fenêtre de réglages :
 
-- la taille des clawd (de 1× à 8×), celle de l'étiquette de survol (de 1× à 4×, à part) et celle de l'île, qui grandit toute seule avec le nombre de bonhommes (8 affichés au plus), ou que tu peux fixer à la main, ou carrément cacher ;
+- la taille des clawd (de 1× à 8×), celle de l'étiquette de survol (de 1× à 4× par demi-pas, à part) et celle de l'île, qui grandit toute seule avec le nombre de bonhommes (8 affichés au plus), ou que tu peux fixer à la main, ou carrément cacher ;
 - la durée des humeurs : content, neutre, triste ;
 - « toujours afficher », même quand aucune session n'est ouverte (sinon l'île se cache) ;
 - la liste des sessions et le détail de celle que tu as choisie.

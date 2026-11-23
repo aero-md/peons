@@ -376,8 +376,8 @@ func (s *settings) build(now time.Time) (height int) {
 	s.text(x0, y-s.p(4), "1× : un pixel d'écran par pixel du sprite, 2× : deux, etc.", styleSmall, colMuted)
 	y += s.lineH(styleSmall) + s.p(8)
 
-	y += s.stepper(y, "Taille de l'étiquette", fmt.Sprintf("%d×", a.tipSize),
-		func() { a.setTipSize(a.tipSize - 1) }, func() { a.setTipSize(a.tipSize + 1) })
+	y += s.stepper(y, "Taille de l'étiquette", fmtTipSize(a.tipSize),
+		func() { a.setTipSize(a.tipSize - tipStep) }, func() { a.setTipSize(a.tipSize + tipStep) })
 	s.text(x0, y-s.p(4), "L'étiquette qui apparaît au survol d'un clawd, à part des clawd.", styleSmall, colMuted)
 	y += s.lineH(styleSmall) + s.p(8)
 

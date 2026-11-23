@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -64,10 +65,11 @@ const (
 	maxScale     = 8
 
 	// Taille de l'étiquette de survol, indépendante de celle des clawd : multiple de
-	// l'échelle de l'écran.
-	defaultTipSize = 1
-	minTipSize     = 1
-	maxTipSize     = 4
+	// l'échelle de l'écran, par pas de tipStep.
+	defaultTipSize = 1.0
+	minTipSize     = 1.0
+	maxTipSize     = 4.0
+	tipStep        = 0.5
 
 	// trimAfter : calme après lequel le tas est rendu au système d'exploitation.
 	trimAfter = 20 * time.Second
@@ -147,13 +149,13 @@ type app struct {
 	set      *settings // fenêtre de réglages, nil quand elle est fermée
 	tray     *tray     // l'icône de la zone de notification, nil sans elle
 
-	n            int // nombre d'emplacements pour lesquels la fenêtre est dimensionnée
-	slotsX0      int // abscisse (pixels d'art) du premier emplacement
-	below        int // pixels d'art sous la ligne des pieds
-	W, H, ground int // taille de la fenêtre et ligne des pieds, en pixels écran
-	centerX, top int // position : milieu du bord haut, pour grandir autour du même axe
-	ui           int // échelle des sprites, du socle d'herbe et de la fenêtre
-	tipSize      int // taille de l'étiquette de survol (1 à maxTipSize), à part de ui
+	n            int     // nombre d'emplacements pour lesquels la fenêtre est dimensionnée
+	slotsX0      int     // abscisse (pixels d'art) du premier emplacement
+	below        int     // pixels d'art sous la ligne des pieds
+	W, H, ground int     // taille de la fenêtre et ligne des pieds, en pixels écran
+	centerX, top int     // position : milieu du bord haut, pour grandir autour du même axe
+	ui           int     // échelle des sprites, du socle d'herbe et de la fenêtre
+	tipSize      float64 // taille de l'étiquette de survol (1 à maxTipSize, par tipStep), à part de ui
 	shown        bool
 	appeared     bool // vrai après le premier peuplement : les clawd suivants arrivent par un portail
 	drag         struct {
@@ -244,7 +246,11 @@ func runApp() {
 	if s := a.prefs.Scale; s > 0 && !explicit["ui"] {
 		a.ui = clampScale(s)
 	}
-	a.tipSize = clampTipSize(a.prefs.TipScale)
+	tip := a.prefs.TipSize
+	if tip == 0 {
+		tip = float64(a.prefs.TipScale) // réglée avant les demi-pas
+	}
+	a.tipSize = clampTipSize(tip)
 	guiErrors = !opt.trace
 	if opt.pin != "" || opt.resume || opt.clear {
 		opt.demo = true
@@ -375,22 +381,29 @@ func (a *app) setScale(s int) {
 	a.resize(a.slots())
 }
 
-// clampTipSize borne la taille de l'étiquette ; 0 (jamais réglée) donne le défaut.
-func clampTipSize(s int) int {
+// clampTipSize borne la taille de l'étiquette et la cale sur un pas (un prefs.json
+// retouché à la main peut dire 1.3) ; 0 (jamais réglée) donne le défaut.
+func clampTipSize(s float64) float64 {
 	if s == 0 {
 		s = defaultTipSize
 	}
+	s = math.Round(s/tipStep) * tipStep
 	return max(minTipSize, min(maxTipSize, s))
 }
 
 // setTipSize change la taille de l'étiquette de survol, sans toucher à l'overlay.
-func (a *app) setTipSize(s int) {
+func (a *app) setTipSize(s float64) {
 	s = clampTipSize(s)
 	if s == a.tipSize {
 		return
 	}
-	a.tipSize, a.prefs.TipScale = s, s
+	a.tipSize, a.prefs.TipSize, a.prefs.TipScale = s, s, 0
 	a.savePrefs()
+}
+
+// fmtTipSize : « 1× », « 1,5× ».
+func fmtTipSize(s float64) string {
+	return strings.Replace(strconv.FormatFloat(s, 'f', -1, 64), ".", ",", 1) + "×"
 }
 
 func (a *app) setNeutral(d time.Duration) {

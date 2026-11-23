@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"math"
 	"slices"
 	"time"
 )
@@ -32,7 +33,7 @@ type tipInfo struct {
 	Remaining   int     // tokens restants
 	WindowSize  int
 	Anchor      image.Rectangle // le bonhomme, en pixels d'écran
-	ScaleFactor int             // facteur entier d'agrandissement de l'étiquette (voir tipScale)
+	ScaleFactor float64         // facteur d'agrandissement de l'étiquette, entier ou demi (voir tipScale)
 }
 
 const (
@@ -107,10 +108,16 @@ func (a *app) refreshTip(now time.Time) {
 	a.tipAt = now.Add(tipRefresh)
 }
 
-// tipScale : le facteur entier de l'étiquette, c'est-à-dire sa taille réglée (size,
-// indépendante de celle des clawd) multipliée par l'échelle de l'écran, arrondi.
-func tipScale(size int, display float64) int {
-	return max(1, int(display*float64(size)+0.5))
+// tipScale : le facteur de l'étiquette, c'est-à-dire sa taille réglée (size,
+// indépendante de celle des clawd) multipliée par l'échelle de l'écran, arrondi au
+// pas de la taille : à l'entier pour une taille entière (la police reste nette, comme
+// avant les demi-pas), au demi pour une demi-taille (police lissée).
+func tipScale(size, display float64) float64 {
+	step := 1.0
+	if size != math.Trunc(size) {
+		step = tipStep
+	}
+	return max(1, math.Round(display*size/step)*step)
 }
 
 // fmtTokens : « 74k », « 1,2M ».

@@ -19,9 +19,13 @@ type Prefs struct {
 	HappyMin   int  `json:"happy_min,omitempty"`
 	NeutralMin int  `json:"neutral_min,omitempty"`
 	SadMin     int  `json:"sad_min,omitempty"`
-	Scale      int  `json:"scale,omitempty"`     // pixels d'écran par pixel de sprite ; 0 : défaut
-	TipScale   int  `json:"tip_scale,omitempty"` // taille de l'étiquette de survol ; 0 : défaut
-	AlwaysShow bool `json:"always_show,omitempty"`
+	Scale      int  `json:"scale,omitempty"` // pixels d'écran par pixel de sprite ; 0 : défaut
+	// TipSize : taille de l'étiquette de survol, par demi-pas (1, 1,5, 2…) ; 0 : défaut.
+	// TipScale est l'ancienne clé, entière : lue tant que TipSize est à zéro, effacée
+	// au premier réglage (une nouvelle clé, pour qu'un ancien exe lise encore le fichier).
+	TipSize    float64 `json:"tip_size,omitempty"`
+	TipScale   int     `json:"tip_scale,omitempty"`
+	AlwaysShow bool    `json:"always_show,omitempty"`
 	// Taille de l'île : automatique (selon le nombre de bonhommes) tant que
 	// IslandManual est faux ; sinon IslandSections sections centrales.
 	IslandManual   bool `json:"island_manual,omitempty"`

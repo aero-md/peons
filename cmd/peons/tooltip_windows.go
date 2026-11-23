@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"sync"
 	"unsafe"
 
@@ -18,14 +19,15 @@ import (
 
 // layeredTip : l'étiquette de survol, une petite fenêtre superposée qui laisse
 // passer la souris (WS_EX_TRANSPARENT). Le texte est dessiné avec PxPlus IBM EGA
-// 8x14 (assets/), à 16 px de corps (ou un multiple entier) : un pixel de la police
-// vaut alors exactement un pixel d'écran, donc le texte reste net.
+// 8x14 (assets/), à 16 px de corps × f : pour un f entier, un pixel de la police
+// vaut exactement f pixels d'écran, donc le texte reste net ; pour un demi (1,5×…),
+// un pixel de police tombe à cheval sur deux pixels d'écran et le texte est lissé.
 type layeredTip struct {
 	hwnd  uintptr
 	dib   dibSection
 	img   *image.RGBA // l'étiquette en RGBA prémultiplié, avant conversion en BGRA
 	face  font.Face
-	faceK int
+	faceF float64
 	shown bool
 }
 
@@ -83,10 +85,10 @@ func (t *layeredTip) create() error {
 	return nil
 }
 
-// loadFace donne la police au corps de 16×k pixels (la création est coûteuse :
-// elle est gardée tant que k ne change pas).
-func (t *layeredTip) loadFace(k int) (font.Face, error) {
-	if t.face != nil && t.faceK == k {
+// loadFace donne la police au corps de 16×f pixels (la création est coûteuse :
+// elle est gardée tant que f ne change pas).
+func (t *layeredTip) loadFace(f float64) (font.Face, error) {
+	if t.face != nil && t.faceF == f {
 		return t.face, nil
 	}
 	tipFontOnce.Do(func() {
@@ -100,14 +102,14 @@ func (t *layeredTip) loadFace(k int) (font.Face, error) {
 	if tipFontErr != nil {
 		return nil, tipFontErr
 	}
-	face, err := opentype.NewFace(tipFont, &opentype.FaceOptions{Size: float64(16 * k), DPI: 72, Hinting: font.HintingNone})
+	face, err := opentype.NewFace(tipFont, &opentype.FaceOptions{Size: 16 * f, DPI: 72, Hinting: font.HintingNone})
 	if err != nil {
 		return nil, err
 	}
 	if t.face != nil {
 		t.face.Close()
 	}
-	t.face, t.faceK = face, k
+	t.face, t.faceF = face, f
 	return face, nil
 }
 
@@ -155,17 +157,61 @@ func barColor(f float64) color.RGBA {
 	return premul(lerp(from[0], to[0], t), lerp(from[1], to[1], t), lerp(from[2], to[2], t), 0xff)
 }
 
+// tipUnits : les mesures de l'étiquette pour un facteur f, en pixels d'écran. Pour
+// un f entier, exactement celles d'avant les demi-pas (n×f partout) ; pour un demi,
+// les longueurs sont arrondies et les traits d'un pixel de police (cadre, écart
+// entre les segments) arrondis par défaut, pour rester fins.
+type tipUnits struct{ f float64 }
+
+// px : n pixels de police.
+func (u tipUnits) px(n int) int { return int(math.Round(float64(n) * u.f)) }
+
+// thin : un trait d'un pixel de police.
+func (u tipUnits) thin() int { return max(1, int(u.f)) }
+
 func (t *layeredTip) Show(info tipInfo) {
 	if err := t.create(); err != nil {
 		logf("étiquette : %v", err)
 		return
 	}
-	k := max(1, info.ScaleFactor)
-	face, err := t.loadFace(k)
+	f := max(1, info.ScaleFactor)
+	face, err := t.loadFace(f)
 	if err != nil {
 		logf("étiquette : police : %v", err)
 		return
 	}
+	u := tipUnits{f}
+	t.compose(info, face, u)
+	w, h := t.img.Rect.Dx(), t.img.Rect.Dy()
+	// --- vers la fenêtre : RGBA prémultiplié -> BGRA prémultiplié
+	if t.dib.w != w || t.dib.h != h {
+		t.dib.create(w, h)
+	}
+	for i := 0; i+3 < len(t.img.Pix); i += 4 {
+		t.dib.bits[i], t.dib.bits[i+1], t.dib.bits[i+2], t.dib.bits[i+3] = t.img.Pix[i+2], t.img.Pix[i+1], t.img.Pix[i], t.img.Pix[i+3]
+	}
+	// --- position : centrée au-dessus du bonhomme, dans l'écran
+	gap := u.px(4)
+	px, py := info.Anchor.Min.X+info.Anchor.Dx()/2-w/2, info.Anchor.Min.Y-h-gap
+	if b, _, ok := monitorBounds(monitorFromPoint(image.Pt(info.Anchor.Min.X+info.Anchor.Dx()/2, info.Anchor.Min.Y), monitorNearest)); ok {
+		px = max(b.Min.X, min(px, b.Max.X-w))
+		if py < b.Min.Y { // pas de place au-dessus : sous le bonhomme
+			py = info.Anchor.Max.Y + gap
+		}
+	}
+	pt, sz, src := winPoint{int32(px), int32(py)}, winSize{int32(w), int32(h)}, winPoint{}
+	blend := blendFunction{op: 0, alpha: 255, format: 1}
+	procUpdateLayered.Call(t.hwnd, 0, uintptr(unsafe.Pointer(&pt)), uintptr(unsafe.Pointer(&sz)), t.dib.memDC,
+		uintptr(unsafe.Pointer(&src)), 0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
+	if !t.shown {
+		procShowWindow.Call(t.hwnd, swShowNoActivate)
+		procSetWindowPos.Call(t.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
+		t.shown = true
+	}
+}
+
+// compose dessine l'étiquette dans t.img (sans fenêtre : testable).
+func (t *layeredTip) compose(info tipInfo, face font.Face, u tipUnits) {
 	// --- contenu
 	type line struct {
 		text string
@@ -188,8 +234,8 @@ func (t *layeredTip) Show(info tipInfo) {
 	if info.ContextOK {
 		remaining = fmt.Sprintf("%s restants sur %s", fmtTokens(info.Remaining), fmtTokens(info.WindowSize))
 	}
-	// --- mesures, en pixels d'écran (un pixel de police = k pixels)
-	lh, padX, padY, bw := 15*k, 7*k, 5*k, k
+	// --- mesures, en pixels d'écran (un pixel de police = f pixels)
+	lh, padX, padY, bw := u.px(15), u.px(7), u.px(5), u.thin()
 	textW := 0
 	for _, l := range lines {
 		textW = max(textW, font.MeasureString(face, l.text).Ceil())
@@ -198,12 +244,14 @@ func (t *layeredTip) Show(info tipInfo) {
 	// la barre a une taille fixe, quelle que soit la largeur de l'étiquette : 24 segments
 	// de 3 pixels séparés d'un pixel, dans un cadre d'un pixel
 	const segments = 24
-	barW := (2 + segments*4 - 1) * k
-	barH := 7 * k
+	gap := u.thin()
+	seg := u.px(4) - gap // segment + écart = 4 pixels de police, tombe juste aussi pour un demi
+	barW := 2*bw + segments*(seg+gap) - gap
+	barH := u.px(7)
 	w := 2*(bw+padX) + max(textW, barW)
 	h := 2*(bw+padY) + len(lines)*lh
 	if info.ContextOK {
-		h += barH + 2*k + lh // la barre, puis les tokens restants
+		h += barH + u.px(2) + lh // la barre, puis les tokens restants
 	}
 	// --- dessin
 	if t.img == nil || t.img.Rect.Dx() != w || t.img.Rect.Dy() != h {
@@ -226,9 +274,8 @@ func (t *layeredTip) Show(info tipInfo) {
 		// la barre « inversée » : elle se remplit avec le contexte et vire au rouge
 		track := image.Rect(x0, y, x0+barW, y+barH)
 		fill(track, tipBorder)
-		inner := track.Inset(k)
+		inner := track.Inset(bw)
 		fill(inner, tipTrack)
-		seg, gap := 3*k, k
 		n := segments
 		filled := int(info.Fraction*float64(n) + 0.5)
 		if info.Fraction > 0 {
@@ -239,31 +286,7 @@ func (t *layeredTip) Show(info tipInfo) {
 			sx := inner.Min.X + i*(seg+gap)
 			fill(image.Rect(sx, inner.Min.Y, min(sx+seg, inner.Max.X), inner.Max.Y), c)
 		}
-		y += barH + 2*k
+		y += barH + u.px(2)
 		text(x0, y, remaining, tipMuted)
-	}
-	// --- vers la fenêtre : RGBA prémultiplié -> BGRA prémultiplié
-	if t.dib.w != w || t.dib.h != h {
-		t.dib.create(w, h)
-	}
-	for i := 0; i+3 < len(t.img.Pix); i += 4 {
-		t.dib.bits[i], t.dib.bits[i+1], t.dib.bits[i+2], t.dib.bits[i+3] = t.img.Pix[i+2], t.img.Pix[i+1], t.img.Pix[i], t.img.Pix[i+3]
-	}
-	// --- position : centrée au-dessus du bonhomme, dans l'écran
-	px, py := info.Anchor.Min.X+info.Anchor.Dx()/2-w/2, info.Anchor.Min.Y-h-4*k
-	if b, _, ok := monitorBounds(monitorFromPoint(image.Pt(info.Anchor.Min.X+info.Anchor.Dx()/2, info.Anchor.Min.Y), monitorNearest)); ok {
-		px = max(b.Min.X, min(px, b.Max.X-w))
-		if py < b.Min.Y { // pas de place au-dessus : sous le bonhomme
-			py = info.Anchor.Max.Y + 4*k
-		}
-	}
-	pt, sz, src := winPoint{int32(px), int32(py)}, winSize{int32(w), int32(h)}, winPoint{}
-	blend := blendFunction{op: 0, alpha: 255, format: 1}
-	procUpdateLayered.Call(t.hwnd, 0, uintptr(unsafe.Pointer(&pt)), uintptr(unsafe.Pointer(&sz)), t.dib.memDC,
-		uintptr(unsafe.Pointer(&src)), 0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
-	if !t.shown {
-		procShowWindow.Call(t.hwnd, swShowNoActivate)
-		procSetWindowPos.Call(t.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
-		t.shown = true
 	}
 }
